@@ -364,8 +364,23 @@ export class ScaleParser {
       return null;
     }
 
+    // Extract PLU code - may have prefixes like P" from scale acknowledgment response
+    let pluCode = fields[0]?.trim() || "";
+    
+    // Strip P" prefix if present (scale sends this after acknowledgment)
+    if (pluCode.startsWith('P"')) {
+      pluCode = pluCode.slice(2);
+      log("debug", `Stripped P" prefix, PLU now: ${pluCode}`);
+    }
+    // Also handle just P prefix
+    if (pluCode.startsWith('P')) {
+      pluCode = pluCode.slice(1);
+      log("debug", `Stripped P prefix, PLU now: ${pluCode}`);
+    }
+    // Strip any leading/trailing quotes
+    pluCode = pluCode.replace(/^["']|["']$/g, "");
+    
     // Validate PLU code format (5 digits)
-    const pluCode = fields[0]?.trim();
     if (!pluCode || !/^\d{5}$/.test(pluCode)) {
       log("debug", `Invalid PLU code: ${pluCode}`);
       return null;
