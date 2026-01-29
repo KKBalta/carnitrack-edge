@@ -352,8 +352,14 @@ export class ScaleParser {
    * Format from DP-401:
    * PLU,TIME,DATE,PRODUCT,BARCODE,CODE,OPERATOR,VAL1,WEIGHT,VAL2,FLAGS...,COMPANY
    * 
+   * Based on actual data analysis:
+   * - Field [7] (VAL1): Contains the actual weight in grams (e.g., "0038319201" = 38319201 grams)
+   * - Field [8]: Appears to be a display/calculated value (often "0000000000")
+   * - Field [9] (VAL2): May contain net weight or duplicate of VAL1
+   * 
    * Example:
-   * 00001,13:59:59,15.01.2026,KIYMA           ,000000000001,0000,KAAN...,0038319236,0000000035,0038319201,0,0,0,1,N,KORKUT KAAN BALTA
+   * 00001,01:44:22,30.01.2026,KIYMA,000000000001,0000,KAAN,0038319201,0000000000,0038319201,0,0,0,1,N,KORKUT KAAN BALTA
+   * Weight should be parsed from field [7] (VAL1): 38319201 grams
    */
   private parseWeighingEvent(line: string): WeighingEventData | null {
     const fields = line.split(",");
@@ -408,12 +414,15 @@ export class ScaleParser {
     const barcode = fields[4]?.trim() || "";
     const code = fields[5]?.trim() || "";
     const operator = fields[6]?.trim() || "";
-    const value1 = fields[7]?.trim() || "";
     
-    // Weight is at index 8, typically 10 digits representing grams
-    const weightRaw = fields[8]?.trim() || "0";
+    // Weight is in field [7] (VAL1), typically 10 digits representing grams
+    // Field [8] appears to be a display/calculated value (often zeros)
+    // Field [9] (VAL2) may contain net weight or duplicate of VAL1
+    const value1 = fields[7]?.trim() || "";
+    const weightRaw = value1 || "0"; // Use VAL1 as the weight source
     const weightGrams = this.parseWeight(weightRaw);
     
+    const displayWeight = fields[8]?.trim() || ""; // Field [8] - display value
     const value2 = fields[9]?.trim() || "";
     
     // Flags are the remaining fields until company (typically last)
@@ -433,8 +442,8 @@ export class ScaleParser {
       code,
       operator,
       weightGrams,
-      value1,
-      value2,
+      value1: displayWeight, // Store field [8] as value1 for reference
+      value2, // Store field [9] as value2
       flags,
       company,
       rawData: line,
@@ -466,10 +475,11 @@ export class ScaleParser {
   /**
    * Parse weight from raw value
    * 
-   * The DP-401 sends weight as a 10-digit number.
-   * Based on the example "0000000035" = 35 (likely grams or 0.035 kg)
+   * The DP-401 sends weight as a 10-digit number in grams.
+   * Example: "0038319201" = 38319201 grams = 38319.201 kg
    * 
-   * TODO: Verify with known weights whether this is grams directly
+   * The weight value comes from VAL1 field (field [7] in CSV).
+   * This represents the actual weight measured by the scale in grams.
    */
   private parseWeight(raw: string): number {
     const weight = parseInt(raw, 10);
@@ -478,8 +488,7 @@ export class ScaleParser {
       return 0;
     }
     
-    // According to DP-401 protocol, this appears to be grams directly
-    // but may need calibration testing
+    // Weight is in grams (10-digit number from scale)
     return weight;
   }
 

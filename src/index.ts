@@ -463,12 +463,21 @@ async function main() {
     state.offlineMode = true;
     
     // Start offline batch for each active device when Cloud disconnects
+    // Only create a new batch if one doesn't already exist for the device
     const deviceManager = getDeviceManager();
     const activeDevices = deviceManager.getActiveDevices();
     for (const device of activeDevices) {
       if (device.status === "online" || device.status === "idle") {
-        const batch = offlineBatchManager.startBatch(device.deviceId);
-        console.log(`[OfflineBatch] Started batch ${batch.id} for device ${device.deviceId}`);
+        // Check if there's already an active batch for this device
+        const activeBatches = offlineBatchManager.getActiveBatches();
+        const existingBatch = activeBatches.find(b => b.deviceId === device.deviceId);
+        
+        if (existingBatch) {
+          console.log(`[OfflineBatch] Using existing batch ${existingBatch.id} for device ${device.deviceId}`);
+        } else {
+          const batch = offlineBatchManager.startBatch(device.deviceId);
+          console.log(`[OfflineBatch] Started batch ${batch.id} for device ${device.deviceId}`);
+        }
       }
     }
   });
