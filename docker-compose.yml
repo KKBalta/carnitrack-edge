@@ -1,0 +1,109 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# CarniTrack Edge Service - Docker Compose
+# ═══════════════════════════════════════════════════════════════════════════════
+# 
+# Usage:
+#   Development:  docker compose up
+#   Production:   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#   Logs:         docker compose logs -f carnitrack-edge
+#   Stop:         docker compose down
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+services:
+  carnitrack-edge:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: carnitrack-edge
+    restart: unless-stopped
+    
+    # ─────────────────────────────────────────────────────────────────────────────
+    # Port Mapping
+    # ─────────────────────────────────────────────────────────────────────────────
+    ports:
+      # Admin Dashboard (HTTP)
+      - "3000:3000"
+      # Scale TCP Server - DP-401 scales connect here
+      - "3001:3001"
+    
+    # ─────────────────────────────────────────────────────────────────────────────
+    # Environment Variables
+    # ─────────────────────────────────────────────────────────────────────────────
+    environment:
+      # Edge Identity (set these for your site)
+      - EDGE_SITE_ID=${EDGE_SITE_ID:-site-default}
+      - EDGE_SITE_NAME=${EDGE_SITE_NAME:-Default Site}
+      
+      # Cloud Connection
+      - CLOUD_WS_URL=${CLOUD_WS_URL:-wss://api.carnitrack.cloud/edge/ws}
+      - CLOUD_API_URL=${CLOUD_API_URL:-https://api.carnitrack.cloud}
+      - CLOUD_API_KEY=${CLOUD_API_KEY:-}
+      
+      # Servers
+      - TCP_PORT=3001
+      - TCP_HOST=0.0.0.0
+      - HTTP_PORT=3000
+      - HTTP_HOST=0.0.0.0
+      
+      # Database
+      - DATABASE_PATH=/app/data/carnitrack.db
+      
+      # Logging
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - NODE_ENV=${NODE_ENV:-production}
+    
+    # ─────────────────────────────────────────────────────────────────────────────
+    # Volumes - Persist data across container restarts
+    # ─────────────────────────────────────────────────────────────────────────────
+    volumes:
+      # SQLite database - CRITICAL: persist this!
+      - carnitrack-data:/app/data
+      # Logs
+      - carnitrack-logs:/app/logs
+      # Generated PLU files
+      - carnitrack-generated:/app/generated
+    
+    # ─────────────────────────────────────────────────────────────────────────────
+    # Network
+    # ─────────────────────────────────────────────────────────────────────────────
+    networks:
+      - carnitrack-network
+    
+    # ─────────────────────────────────────────────────────────────────────────────
+    # Health Check
+    # ─────────────────────────────────────────────────────────────────────────────
+    healthcheck:
+      test: ["CMD", "bun", "--eval", "fetch('http://localhost:3000/health').then(r => process.exit(r.ok ? 0 : 1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    
+    # ─────────────────────────────────────────────────────────────────────────────
+    # Logging
+    # ─────────────────────────────────────────────────────────────────────────────
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Volumes
+# ═══════════════════════════════════════════════════════════════════════════════
+volumes:
+  carnitrack-data:
+    name: carnitrack-edge-data
+  carnitrack-logs:
+    name: carnitrack-edge-logs
+  carnitrack-generated:
+    name: carnitrack-edge-generated
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Networks
+# ═══════════════════════════════════════════════════════════════════════════════
+networks:
+  carnitrack-network:
+    name: carnitrack-network
+    driver: bridge

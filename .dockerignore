@@ -1,0 +1,46 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# CarniTrack Edge - Docker Ignore
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Git
+.git
+.gitignore
+
+# Dependencies (will be installed in container)
+node_modules/
+
+# Local data (not for container image)
+data/
+logs/
+generated/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Environment files (use docker-compose environment instead)
+.env
+.env.*
+!.env.example
+
+# Documentation (not needed in container)
+*.md
+!README.md
+
+# Test files
+__tests__/
+*.test.ts
+*.spec.ts
+coverage/
+
+# Build artifacts
+dist/
+*.log
+
+# Lock files (we use bun.lockb)
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
