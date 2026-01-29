@@ -117,6 +117,7 @@ export class TCPServer {
   private config: TCPServerConfig;
   private stats: TCPServerStats;
   private isRunning: boolean = false;
+  private actualPort: number = 0;
 
   constructor(callbacks: TCPServerCallbacks, serverConfig?: Partial<TCPServerConfig>) {
     this.callbacks = callbacks;
@@ -248,8 +249,11 @@ export class TCPServer {
       this.isRunning = true;
       this.stats.startedAt = new Date();
       
+      // Get actual port (may differ from config.port if port was 0)
+      this.actualPort = this.server.port;
+      
       log("info", `═══════════════════════════════════════════════════════════════`);
-      log("info", `  TCP Server started on ${this.config.host}:${this.config.port}`);
+      log("info", `  TCP Server started on ${this.config.host}:${this.actualPort}`);
       log("info", `  Waiting for DP-401 scale connections...`);
       log("info", `═══════════════════════════════════════════════════════════════`);
 
@@ -430,7 +434,7 @@ export class TCPServer {
     if (!this.isRunning) return null;
     return {
       host: this.config.host,
-      port: this.config.port,
+      port: this.actualPort || this.config.port,
     };
   }
 }

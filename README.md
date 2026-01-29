@@ -245,6 +245,32 @@ Access at `http://localhost:3000`
 - **Sessions** - Active sessions (cached from Cloud)
 - **Database** - SQLite browser for debugging
 
+## ☁️ Cloud Integration
+
+### Documentation
+
+- **[Cloud Integration Guide](CLOUD_INTEGRATION.md)** - Complete guide for integrating Edge with Cloud application
+- **[Quick Reference](CLOUD_INTEGRATION_QUICKREF.md)** - Quick reference for common integration patterns
+
+### Key Integration Points
+
+1. **WebSocket Connection** - Edge connects to Cloud via WebSocket (`ws://your-cloud/edge`)
+2. **Message Protocol** - Bidirectional message protocol for events, sessions, devices
+3. **Session Management** - Cloud manages sessions, Edge caches for offline use
+4. **Event Streaming** - Real-time event streaming with acknowledgments
+5. **Offline Batches** - Automatic batch creation and reconciliation
+
+### Quick Start for Cloud Developers
+
+1. Set up WebSocket server on `/edge` endpoint
+2. Handle Edge registration (`register` message)
+3. Send active sessions on connection (`session_started` messages)
+4. Process events (`event` messages) and acknowledge (`event_ack`)
+5. Manage sessions (`session_started`, `session_ended`)
+6. Handle offline batches (`offline_batch_end`)
+
+See [CLOUD_INTEGRATION.md](CLOUD_INTEGRATION.md) for detailed implementation guide.
+
 ## 📜 License
 
 Proprietary - CarniTrack Team

@@ -20,10 +20,22 @@ import { config } from "./config.ts";
 import { initDatabase, closeDatabase, getAllEdgeConfig } from "./storage/database.ts";
 import { TCPServer, setGlobalTCPServer } from "./devices/tcp-server.ts";
 import type { SocketMeta } from "./devices/tcp-server.ts";
-import { ScaleParser, getAckResponse, toParsedScaleEvent } from "./devices/scale-parser.ts";
+import { ScaleParser, getAckResponse } from "./devices/scale-parser.ts";
 import type { ParsedPacket } from "./devices/scale-parser.ts";
 import { initDeviceManager, getDeviceManager } from "./devices/device-manager.ts";
-import { initWebSocketClient, getWebSocketClient, destroyWebSocketClient } from "./cloud/index.ts";
+import { initEventProcessor, getEventProcessor, destroyEventProcessor } from "./devices/event-processor.ts";
+import { initSessionCacheManager, getSessionCacheManager, destroySessionCacheManager } from "./sessions/index.ts";
+import { 
+  initWebSocketClient, 
+  getWebSocketClient, 
+  destroyWebSocketClient,
+  initOfflineBatchManager,
+  getOfflineBatchManager,
+  destroyOfflineBatchManager,
+  initCloudSyncService,
+  getCloudSyncService,
+  destroyCloudSyncService,
+} from "./cloud/index.ts";
 import type { CloudConnectionState } from "./types/index.ts";
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -160,7 +172,12 @@ function handleParsedPacket(socketId: string, packet: ParsedPacket, meta: Socket
         });
       }
       
-      // TODO: Check for active session in cache - Issue #5
+      // Check for active session in cache
+      const sessionCache = getSessionCacheManager();
+      const activeSession = sessionCache.getActiveSessionForDevice(deviceId);
+      if (activeSession) {
+        console.log(`[TCP]    Active session: ${activeSession.cloudSessionId}`);
+      }
       break;
     }
     
@@ -220,15 +237,25 @@ function handleParsedPacket(socketId: string, packet: ParsedPacket, meta: Socket
       // Update device last event time via DeviceManager
       deviceManager.updateOnEvent(socketId);
       
-      // Convert to ParsedScaleEvent for further processing
-      // This will be used by Event Processor (Issue #6) and Cloud Sync (Issue #8)
-      const _parsedEvent = toParsedScaleEvent(eventData);
-      void _parsedEvent; // Suppress unused warning until Issue #6 implemented
+      // Process weighing event through Event Processor
+      // This handles session tagging, offline batch management, and local storage
+      const eventProcessor = getEventProcessor();
+      const processedEvent = eventProcessor.processWeighingEvent(
+        eventData,
+        deviceId,
+        meta.remoteAddress
+      );
       
-      // TODO: Check for active session in cache - Issue #5
-      // TODO: If offline mode, create/add to offline batch - Issue #7
-      // TODO: Store event locally (with session/batch linkage) - Issue #6
-      // TODO: Stream to Cloud via WebSocket (if connected) - Issue #8
+      console.log(`[TCP]    Event stored: ${processedEvent.id}`);
+      if (processedEvent.cloudSessionId) {
+        console.log(`[TCP]    Tagged with session: ${processedEvent.cloudSessionId}`);
+      }
+      if (processedEvent.offlineBatchId) {
+        console.log(`[TCP]    Tagged with offline batch: ${processedEvent.offlineBatchId}`);
+      }
+      
+      // Event Processor emits "event:captured" which CloudSyncService listens to
+      // CloudSyncService will automatically stream the event if Cloud is connected
       
       // Send acknowledgment
       if (tcpServer) {
@@ -332,6 +359,27 @@ async function main() {
   const deviceManager = initDeviceManager(state.siteId);
   console.log(`[INIT] ✓ Device Manager ready (${deviceManager.getDeviceCount()} devices loaded)`);
   
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Initialize Session Cache Manager (Issue #5)
+  // ─────────────────────────────────────────────────────────────────────────────
+  console.log("[INIT] Initializing Session Cache Manager...");
+  initSessionCacheManager();
+  console.log("[INIT] ✓ Session Cache Manager ready");
+  
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Initialize Event Processor (Issue #6)
+  // ─────────────────────────────────────────────────────────────────────────────
+  console.log("[INIT] Initializing Event Processor...");
+  initEventProcessor();
+  console.log("[INIT] ✓ Event Processor ready");
+  
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Initialize Offline Batch Manager (Issue #7)
+  // ─────────────────────────────────────────────────────────────────────────────
+  console.log("[INIT] Initializing Offline Batch Manager...");
+  initOfflineBatchManager();
+  console.log("[INIT] ✓ Offline Batch Manager ready");
+  
   // Set up device event listeners for logging
   deviceManager.on("registered", (device) => {
     console.log(`[DeviceEvent] New device registered: ${device.deviceId}`);
@@ -394,16 +442,35 @@ async function main() {
   });
   
   // Set up WebSocket event handlers
+  const offlineBatchManager = getOfflineBatchManager();
+  
   wsClient.on("connected", () => {
     console.log("[CLOUD] ✓ Connected to Cloud");
     state.cloudConnection = "connected";
     state.offlineMode = false;
+    
+    // End any active offline batches when Cloud reconnects
+    const activeBatches = offlineBatchManager.getActiveBatches();
+    for (const batch of activeBatches) {
+      offlineBatchManager.endBatch(batch.id);
+      console.log(`[OfflineBatch] Ended batch ${batch.id} on Cloud reconnect`);
+    }
   });
   
   wsClient.on("disconnected", (data: { reason?: string; code?: number }) => {
     console.log(`[CLOUD] Disconnected from Cloud: ${data.reason || "unknown"}`);
     state.cloudConnection = "disconnected";
     state.offlineMode = true;
+    
+    // Start offline batch for each active device when Cloud disconnects
+    const deviceManager = getDeviceManager();
+    const activeDevices = deviceManager.getActiveDevices();
+    for (const device of activeDevices) {
+      if (device.status === "online" || device.status === "idle") {
+        const batch = offlineBatchManager.startBatch(device.deviceId);
+        console.log(`[OfflineBatch] Started batch ${batch.id} for device ${device.deviceId}`);
+      }
+    }
   });
   
   wsClient.on("reconnecting", (data: { attempt: number; delay: number }) => {
@@ -421,14 +488,50 @@ async function main() {
   });
   
   // Handle incoming messages from Cloud
-  wsClient.onMessage("session_started", (payload) => {
+  const sessionCache = getSessionCacheManager();
+  
+  wsClient.onMessage("session_started", (payload: any) => {
     console.log(`[CLOUD] ← Session started: ${JSON.stringify(payload)}`);
-    // TODO: Cache session locally - Issue #5
+    // Cache session locally
+    sessionCache.handleSessionStart({
+      cloudSessionId: payload.cloudSessionId || payload.sessionId,
+      deviceId: payload.deviceId,
+      animalId: payload.animalId ?? null,
+      animalTag: payload.animalTag ?? null,
+      animalSpecies: payload.animalSpecies ?? null,
+      operatorId: payload.operatorId ?? null,
+      status: payload.status || "active",
+      cachedAt: new Date(),
+      lastUpdatedAt: null,
+      expiresAt: new Date(),
+    });
   });
   
-  wsClient.onMessage("session_ended", (payload) => {
+  wsClient.onMessage("session_ended", (payload: any) => {
     console.log(`[CLOUD] ← Session ended: ${JSON.stringify(payload)}`);
-    // TODO: Remove from session cache - Issue #5
+    // Remove from session cache
+    const sessionId = payload.cloudSessionId || payload.sessionId;
+    if (sessionId) {
+      sessionCache.handleSessionEnd(sessionId, payload.reason || "ended");
+    }
+  });
+  
+  wsClient.onMessage("session_paused", (payload: any) => {
+    console.log(`[CLOUD] ← Session paused: ${JSON.stringify(payload)}`);
+    // Update session status in cache
+    const sessionId = payload.cloudSessionId || payload.sessionId;
+    if (sessionId) {
+      sessionCache.handleSessionUpdate(sessionId, { status: "paused" });
+    }
+  });
+  
+  wsClient.onMessage("session_resumed", (payload: any) => {
+    console.log(`[CLOUD] ← Session resumed: ${JSON.stringify(payload)}`);
+    // Update session status in cache
+    const sessionId = payload.cloudSessionId || payload.sessionId;
+    if (sessionId) {
+      sessionCache.handleSessionUpdate(sessionId, { status: "active" });
+    }
   });
   
   wsClient.onMessage("plu_updated", (payload) => {
@@ -448,6 +551,14 @@ async function main() {
   // Start in offline mode until connected
   state.cloudConnection = wsClient.getStatus();
   state.offlineMode = !wsClient.isConnected();
+  
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Initialize Cloud Sync Service
+  // ─────────────────────────────────────────────────────────────────────────────
+  console.log("[INIT] Initializing Cloud Sync Service...");
+  const syncService = initCloudSyncService();
+  syncService.start();
+  console.log("[INIT] ✓ Cloud Sync Service started");
 
   // ─────────────────────────────────────────────────────────────────────────────
   // Start HTTP Server (Admin Dashboard & API)
@@ -589,6 +700,18 @@ async function shutdown(): Promise<void> {
   console.log("[SHUTDOWN] Stopping heartbeat monitor...");
   stopHeartbeatMonitor();
   
+  console.log("[SHUTDOWN] Stopping Cloud Sync Service...");
+  destroyCloudSyncService();
+  
+  console.log("[SHUTDOWN] Destroying Event Processor...");
+  destroyEventProcessor();
+  
+  console.log("[SHUTDOWN] Destroying Session Cache Manager...");
+  destroySessionCacheManager();
+  
+  console.log("[SHUTDOWN] Destroying Offline Batch Manager...");
+  destroyOfflineBatchManager();
+  
   console.log("[SHUTDOWN] Closing WebSocket connection...");
   destroyWebSocketClient();
   
@@ -628,9 +751,9 @@ async function handleApi(req: Request, path: string): Promise<Response> {
         siteId: state.siteId,
         siteName: state.siteName,
         devices: deviceManager.getStatusSummary(),
-        activeSessions: 0, // TODO: Count from cache - Issue #5
-        pendingOfflineBatches: 0, // TODO: Count from database - Issue #7
-        pendingEventSync: wsClient?.getQueueSize() || 0,
+        activeSessions: getSessionCacheManager().getAllActiveSessions().length,
+        pendingOfflineBatches: getOfflineBatchManager().getPendingSyncBatches().length,
+        pendingEventSync: getCloudSyncService().getPendingCount(),
         cloudConnection: state.cloudConnection,
         offlineMode: state.offlineMode,
         pluUpdateNeeded: false,
@@ -733,27 +856,103 @@ async function handleApi(req: Request, path: string): Promise<Response> {
     });
   }
   
-  // GET /api/sessions - List cached sessions (Placeholder - Issue #5)
+  // GET /api/sessions - List cached sessions
   if (path === "/api/sessions" && req.method === "GET") {
+    const sessionCache = getSessionCacheManager();
+    const sessions = sessionCache.getAllActiveSessions();
+    
     return Response.json({
       success: true,
-      data: [],
+      data: sessions.map(session => ({
+        cloudSessionId: session.cloudSessionId,
+        deviceId: session.deviceId,
+        animalId: session.animalId,
+        animalTag: session.animalTag,
+        animalSpecies: session.animalSpecies,
+        operatorId: session.operatorId,
+        status: session.status,
+        cachedAt: session.cachedAt.toISOString(),
+        lastUpdatedAt: session.lastUpdatedAt?.toISOString() || null,
+        expiresAt: session.expiresAt.toISOString(),
+      })),
     });
   }
   
-  // GET /api/events - List recent events (Placeholder - Issue #6)
+  // GET /api/events - List recent events
   if (path === "/api/events" && req.method === "GET") {
+    const eventProcessor = getEventProcessor();
+    const url = new URL(req.url);
+    const limit = parseInt(url.searchParams.get("limit") || "100", 10);
+    const deviceId = url.searchParams.get("deviceId") || null;
+    const sessionId = url.searchParams.get("sessionId") || null;
+    const batchId = url.searchParams.get("batchId") || null;
+    
+    let events;
+    if (deviceId) {
+      events = eventProcessor.getEventsByDevice(deviceId, limit);
+    } else if (sessionId) {
+      events = eventProcessor.getEventsBySession(sessionId);
+    } else if (batchId) {
+      events = eventProcessor.getEventsByBatch(batchId);
+    } else {
+      events = eventProcessor.getPendingEvents(limit);
+    }
+    
     return Response.json({
       success: true,
-      data: [],
+      data: events.map(event => ({
+        id: event.id,
+        deviceId: event.deviceId,
+        cloudSessionId: event.cloudSessionId,
+        offlineMode: event.offlineMode,
+        offlineBatchId: event.offlineBatchId,
+        pluCode: event.pluCode,
+        productName: event.productName,
+        weightGrams: event.weightGrams,
+        barcode: event.barcode,
+        scaleTimestamp: event.scaleTimestamp.toISOString(),
+        receivedAt: event.receivedAt.toISOString(),
+        sourceIp: event.sourceIp,
+        syncStatus: event.syncStatus,
+        cloudId: event.cloudId,
+        syncedAt: event.syncedAt?.toISOString() || null,
+        syncAttempts: event.syncAttempts,
+        lastSyncError: event.lastSyncError,
+      })),
     });
   }
   
-  // GET /api/offline-batches - List offline batches (Placeholder - Issue #7)
+  // GET /api/offline-batches - List offline batches
   if (path === "/api/offline-batches" && req.method === "GET") {
+    const offlineBatchManager = getOfflineBatchManager();
+    const url = new URL(req.url);
+    const status = url.searchParams.get("status") || null;
+    
+    let batches;
+    if (status === "pending") {
+      batches = offlineBatchManager.getPendingSyncBatches();
+    } else if (status === "active") {
+      batches = offlineBatchManager.getActiveBatches();
+    } else {
+      // Return all batches (we'd need a method for this, but for now return pending)
+      batches = offlineBatchManager.getPendingSyncBatches();
+    }
+    
     return Response.json({
       success: true,
-      data: [],
+      data: batches.map(batch => ({
+        id: batch.id,
+        deviceId: batch.deviceId,
+        startedAt: batch.startedAt.toISOString(),
+        endedAt: batch.endedAt?.toISOString() || null,
+        eventCount: batch.eventCount,
+        totalWeightGrams: batch.totalWeightGrams,
+        reconciliationStatus: batch.reconciliationStatus,
+        cloudSessionId: batch.cloudSessionId,
+        reconciledAt: batch.reconciledAt?.toISOString() || null,
+        reconciledBy: batch.reconciledBy,
+        notes: batch.notes,
+      })),
     });
   }
   

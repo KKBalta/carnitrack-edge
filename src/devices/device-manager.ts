@@ -107,6 +107,10 @@ export class DeviceManager {
     
     console.log("[DeviceManager] Initializing...");
     
+    // Clear existing devices before loading
+    this.devices.clear();
+    this.socketToDevice.clear();
+    
     // Load all devices from database
     const db = getDatabase();
     const rows = db.prepare("SELECT * FROM devices").all() as DeviceRow[];
@@ -129,6 +133,13 @@ export class DeviceManager {
   setSiteId(siteId: string): void {
     this.siteId = siteId;
     console.log(`[DeviceManager] Site ID set to: ${siteId}`);
+  }
+
+  /**
+   * Get the current site ID
+   */
+  getSiteId(): string | null {
+    return this.siteId;
   }
   
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -348,6 +359,7 @@ export class DeviceManager {
     // Update state
     device.tcpConnected = false;
     device.status = "disconnected";
+    device.socketId = null;
     
     // Clean up socket mapping
     this.socketToDevice.delete(socketId);
@@ -715,6 +727,35 @@ export class DeviceManager {
       cloud_registered_at: nowISO(),
     });
     console.log(`[DeviceManager] Device marked as Cloud registered: ${deviceId}`);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // ALIASES FOR TEST COMPATIBILITY
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Alias for disconnectDevice (for test compatibility)
+   */
+  handleDisconnect(socketId: string, reason: string): DeviceRuntimeState | null {
+    return this.disconnectDevice(socketId, reason);
+  }
+
+  /**
+   * Alias for getDeviceBySocketId (for test compatibility)
+   */
+  getDeviceBySocket(socketId: string): DeviceRuntimeState | null {
+    return this.getDeviceBySocketId(socketId);
+  }
+
+  /**
+   * Alias for updateDeviceConfig (for test compatibility)
+   */
+  updateDeviceInfo(deviceId: string, updates: Partial<{
+    displayName: string | null;
+    location: string | null;
+    deviceType: DeviceType;
+  }>): boolean {
+    return this.updateDeviceConfig(deviceId, updates);
   }
 }
 

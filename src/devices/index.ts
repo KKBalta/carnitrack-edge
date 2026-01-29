@@ -32,3 +32,11 @@ export type {
   DeviceEventCallback,
   DeviceRegistrationOptions,
 } from "./device-manager.ts";
+
+// Event Processor
+export {
+  EventProcessor,
+  initEventProcessor,
+  getEventProcessor,
+  destroyEventProcessor,
+} from "./event-processor.ts";
