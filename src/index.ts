@@ -22,7 +22,8 @@ import { TCPServer, setGlobalTCPServer } from "./devices/tcp-server.ts";
 import type { SocketMeta } from "./devices/tcp-server.ts";
 import { ScaleParser, getAckResponse, toParsedScaleEvent } from "./devices/scale-parser.ts";
 import type { ParsedPacket } from "./devices/scale-parser.ts";
-import type { CloudConnectionState, DeviceStatus } from "./types/index.ts";
+import { initDeviceManager, getDeviceManager } from "./devices/device-manager.ts";
+import type { CloudConnectionState } from "./types/index.ts";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // RUNTIME STATE
@@ -43,20 +44,6 @@ interface EdgeState {
   /** Current offline batch ID (if in offline mode) */
   currentOfflineBatchId: string | null;
   
-  /** Connected devices (deviceId → runtime state) */
-  devices: Map<string, {
-    socketId: string;
-    sourceIp: string;
-    status: DeviceStatus;
-    tcpConnected: boolean;
-    lastHeartbeatAt: Date | null;
-    lastEventAt: Date | null;
-    activeCloudSessionId: string | null;
-  }>;
-  
-  /** Socket to device mapping (socketId → deviceId) */
-  socketToDevice: Map<string, string>;
-  
   /** Startup time */
   startedAt: Date;
 }
@@ -68,8 +55,6 @@ const state: EdgeState = {
   cloudConnection: "disconnected",
   offlineMode: false,
   currentOfflineBatchId: null,
-  devices: new Map(),
-  socketToDevice: new Map(),
   startedAt: new Date(),
 };
 
@@ -135,6 +120,8 @@ function handleTCPData(socketId: string, data: Buffer, meta: SocketMeta): void {
  * Handle a single parsed packet from the scale
  */
 function handleParsedPacket(socketId: string, packet: ParsedPacket, meta: SocketMeta): void {
+  const deviceManager = getDeviceManager();
+  
   switch (packet.type) {
     // ─────────────────────────────────────────────────────────────────────────
     // Registration packet (e.g., "SCALE-01")
@@ -148,36 +135,18 @@ function handleParsedPacket(socketId: string, packet: ParsedPacket, meta: Socket
         tcpServer.updateSocketMeta(socketId, { deviceId });
       }
       
-      // Track socket → device mapping
-      state.socketToDevice.set(socketId, deviceId);
+      // Register device via DeviceManager (handles both new and reconnection)
+      const device = deviceManager.registerDevice({
+        socketId,
+        scaleNumber,
+        sourceIp: meta.remoteAddress,
+      });
       
-      // Update or create device state
-      const existingDevice = state.devices.get(deviceId);
-      if (existingDevice) {
-        // Reconnection - update existing device
-        existingDevice.socketId = socketId;
-        existingDevice.sourceIp = meta.remoteAddress;
-        existingDevice.tcpConnected = true;
-        existingDevice.status = "online";
-        existingDevice.lastHeartbeatAt = new Date();
-        console.log(`[TCP] Device reconnected: ${deviceId} (scale #${scaleNumber})`);
-      } else {
-        // New device registration
-        state.devices.set(deviceId, {
-          socketId,
-          sourceIp: meta.remoteAddress,
-          status: "online",
-          tcpConnected: true,
-          lastHeartbeatAt: new Date(),
-          lastEventAt: null,
-          activeCloudSessionId: null,
-        });
-        console.log(`[TCP] ✓ Device registered: ${deviceId} (scale #${scaleNumber}) from ${meta.remoteAddress}`);
-      }
+      console.log(`[TCP] ✓ Device registered: ${deviceId} (scale #${scaleNumber}) from ${meta.remoteAddress}`);
+      console.log(`[TCP]    Global ID: ${device.globalDeviceId}`);
       
       // TODO: Notify Cloud via WebSocket (device_connected) - Issue #4
       // TODO: Check for active session in cache - Issue #5
-      // TODO: Persist device to database - Issue #3
       break;
     }
     
@@ -185,13 +154,10 @@ function handleParsedPacket(socketId: string, packet: ParsedPacket, meta: Socket
     // Heartbeat ("HB")
     // ─────────────────────────────────────────────────────────────────────────
     case "heartbeat": {
-      const deviceId = meta.deviceId || state.socketToDevice.get(socketId);
+      const device = deviceManager.updateHeartbeat(socketId);
       
-      if (deviceId && state.devices.has(deviceId)) {
-        const device = state.devices.get(deviceId)!;
-        device.lastHeartbeatAt = new Date();
-        device.status = "online";
-        console.log(`[TCP] ♥ Heartbeat from ${deviceId}`);
+      if (device) {
+        console.log(`[TCP] ♥ Heartbeat from ${device.deviceId}`);
       } else {
         console.log(`[TCP] ♥ Heartbeat from unregistered socket ${socketId}`);
       }
@@ -215,19 +181,17 @@ function handleParsedPacket(socketId: string, packet: ParsedPacket, meta: Socket
     // Weighing event (parsed CSV data)
     // ─────────────────────────────────────────────────────────────────────────
     case "weighing_event": {
-      const deviceId = meta.deviceId || state.socketToDevice.get(socketId);
+      const device = deviceManager.getDeviceBySocketId(socketId);
+      const deviceId = device?.deviceId || meta.deviceId || "unknown";
       const eventData = packet.event;
       
-      console.log(`[TCP] ⚖️  Weight event from ${deviceId || "unknown"}`);
+      console.log(`[TCP] ⚖️  Weight event from ${deviceId}`);
       console.log(`[TCP]    PLU: ${eventData.pluCode} | Product: ${eventData.productName.trim()}`);
       console.log(`[TCP]    Weight: ${eventData.weightGrams}g | Barcode: ${eventData.barcode}`);
       console.log(`[TCP]    Time: ${eventData.time} ${eventData.date} | Operator: ${eventData.operator.trim()}`);
       
-      // Update device last event time
-      if (deviceId && state.devices.has(deviceId)) {
-        const device = state.devices.get(deviceId)!;
-        device.lastEventAt = new Date();
-      }
+      // Update device last event time via DeviceManager
+      deviceManager.updateOnEvent(socketId);
       
       // Convert to ParsedScaleEvent for further processing
       // This will be used by Event Processor (Issue #6) and Cloud Sync (Issue #8)
@@ -250,8 +214,9 @@ function handleParsedPacket(socketId: string, packet: ParsedPacket, meta: Socket
     // Unknown packet
     // ─────────────────────────────────────────────────────────────────────────
     case "unknown": {
-      const deviceId = meta.deviceId || state.socketToDevice.get(socketId);
-      console.log(`[TCP] Unknown packet from ${deviceId || socketId}: ${packet.raw.substring(0, 100)}...`);
+      const device = deviceManager.getDeviceBySocketId(socketId);
+      const deviceId = device?.deviceId || meta.deviceId || socketId;
+      console.log(`[TCP] Unknown packet from ${deviceId}: ${packet.raw.substring(0, 100)}...`);
       console.log(`[TCP]    Reason: ${packet.reason}`);
       break;
     }
@@ -262,32 +227,29 @@ function handleParsedPacket(socketId: string, packet: ParsedPacket, meta: Socket
  * Handle TCP socket disconnection
  */
 function handleTCPDisconnect(socketId: string, meta: SocketMeta, reason: string): void {
-  const deviceId = meta.deviceId || state.socketToDevice.get(socketId);
+  const deviceManager = getDeviceManager();
+  const device = deviceManager.getDeviceBySocketId(socketId);
+  const deviceId = device?.deviceId || meta.deviceId || socketId;
   
-  console.log(`[TCP] Connection closed: ${deviceId || socketId} - ${reason}`);
+  console.log(`[TCP] Connection closed: ${deviceId} - ${reason}`);
   
   // Clear parser buffer for this socket
   scaleParser.clearBuffer(socketId);
   
-  // Clean up socket → device mapping
-  state.socketToDevice.delete(socketId);
+  // Disconnect device via DeviceManager
+  deviceManager.disconnectDevice(socketId, reason);
   
-  // Update device status
-  if (deviceId && state.devices.has(deviceId)) {
-    const device = state.devices.get(deviceId)!;
-    device.tcpConnected = false;
-    device.status = "disconnected";
-    
-    // TODO: Notify Cloud via WebSocket (device_disconnected) - Issue #4
-  }
+  // TODO: Notify Cloud via WebSocket (device_disconnected) - Issue #4
 }
 
 /**
  * Handle TCP socket error
  */
 function handleTCPError(socketId: string, meta: SocketMeta | null, error: Error): void {
-  const deviceId = meta?.deviceId || state.socketToDevice.get(socketId);
-  console.error(`[TCP] Error on ${deviceId || socketId}:`, error.message);
+  const deviceManager = getDeviceManager();
+  const device = deviceManager.getDeviceBySocketId(socketId);
+  const deviceId = device?.deviceId || meta?.deviceId || socketId;
+  console.error(`[TCP] Error on ${deviceId}:`, error.message);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -324,6 +286,24 @@ async function main() {
     console.log(`[INIT] ⚠️  Edge not yet registered with Cloud`);
     console.log(`[INIT]    Will register on first Cloud connection`);
   }
+  
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Initialize Device Manager
+  // ─────────────────────────────────────────────────────────────────────────────
+  console.log("[INIT] Initializing Device Manager...");
+  const deviceManager = initDeviceManager(state.siteId);
+  console.log(`[INIT] ✓ Device Manager ready (${deviceManager.getDeviceCount()} devices loaded)`);
+  
+  // Set up device event listeners for logging
+  deviceManager.on("registered", (device) => {
+    console.log(`[DeviceEvent] New device registered: ${device.deviceId}`);
+  });
+  deviceManager.on("disconnected", (device) => {
+    console.log(`[DeviceEvent] Device disconnected: ${device.deviceId}`);
+  });
+  deviceManager.on("stale", (device) => {
+    console.log(`[DeviceEvent] Device stale: ${device.deviceId}`);
+  });
   
   // ─────────────────────────────────────────────────────────────────────────────
   // Configuration Summary
@@ -463,31 +443,29 @@ let heartbeatIntervalId: ReturnType<typeof setInterval> | null = null;
 
 function startHeartbeatMonitor(): void {
   heartbeatIntervalId = setInterval(() => {
+    const deviceManager = getDeviceManager();
     const now = Date.now();
     const timeoutThreshold = config.heartbeat.timeoutMs;
     
-    for (const [deviceId, device] of state.devices) {
-      if (!device.tcpConnected) continue;
-      
+    for (const device of deviceManager.getActiveDevices()) {
       const lastHB = device.lastHeartbeatAt?.getTime() || 0;
       const timeSinceHB = now - lastHB;
       
       if (timeSinceHB > timeoutThreshold) {
         // Device missed too many heartbeats
         if (device.status !== "disconnected") {
-          console.log(`[MONITOR] ⚠️  Device ${deviceId} heartbeat timeout (${Math.round(timeSinceHB / 1000)}s)`);
-          device.status = "disconnected";
+          console.log(`[MONITOR] ⚠️  Device ${device.deviceId} heartbeat timeout (${Math.round(timeSinceHB / 1000)}s)`);
           
-          // Close the socket connection
+          // Close the socket connection (this will trigger disconnect in DeviceManager)
           if (tcpServer && device.socketId) {
             tcpServer.closeSocket(device.socketId, "Heartbeat timeout");
           }
         }
       } else if (timeSinceHB > timeoutThreshold / 2) {
         // Device is getting stale
-        if (device.status === "online") {
-          console.log(`[MONITOR] Device ${deviceId} heartbeat delayed (${Math.round(timeSinceHB / 1000)}s)`);
-          device.status = "stale";
+        if (device.status === "online" || device.status === "idle") {
+          console.log(`[MONITOR] Device ${device.deviceId} heartbeat delayed (${Math.round(timeSinceHB / 1000)}s)`);
+          deviceManager.markAsStale(device.deviceId);
         }
       }
     }
@@ -531,6 +509,8 @@ async function shutdown(): Promise<void> {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function handleApi(req: Request, path: string): Response {
+  const deviceManager = getDeviceManager();
+  
   // GET /api/status - System status
   if (path === "/api/status" && req.method === "GET") {
     return Response.json({
@@ -539,9 +519,7 @@ function handleApi(req: Request, path: string): Response {
         edgeId: state.edgeId,
         siteId: state.siteId,
         siteName: state.siteName,
-        devices: Object.fromEntries(
-          Array.from(state.devices.entries()).map(([id, d]) => [id, d.status])
-        ),
+        devices: deviceManager.getStatusSummary(),
         activeSessions: 0, // TODO: Count from cache - Issue #5
         pendingOfflineBatches: 0, // TODO: Count from database - Issue #7
         pendingEventSync: 0, // TODO: Count from database - Issue #8
@@ -559,11 +537,18 @@ function handleApi(req: Request, path: string): Response {
   if (path === "/api/devices" && req.method === "GET") {
     return Response.json({
       success: true,
-      data: Array.from(state.devices.entries()).map(([id, device]) => ({
-        deviceId: id,
-        ...device,
+      data: deviceManager.getAllDevices().map(device => ({
+        deviceId: device.deviceId,
+        globalDeviceId: device.globalDeviceId,
+        status: device.status,
+        tcpConnected: device.tcpConnected,
+        sourceIp: device.sourceIp,
+        heartbeatCount: device.heartbeatCount,
+        eventCount: device.eventCount,
+        activeCloudSessionId: device.activeCloudSessionId,
         lastHeartbeatAt: device.lastHeartbeatAt?.toISOString() || null,
         lastEventAt: device.lastEventAt?.toISOString() || null,
+        connectedAt: device.connectedAt?.toISOString() || null,
       })),
     });
   }

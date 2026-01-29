@@ -123,6 +123,8 @@ export interface DeviceRuntimeState {
   eventCount: number;
   connectedAt: Date | null;
   sourceIp: string | null;
+  /** Current TCP socket ID (for sending data) */
+  socketId: string | null;
   /** Current active session ID from Cloud (if any) */
   activeCloudSessionId: string | null;
 }
