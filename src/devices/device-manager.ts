@@ -17,8 +17,7 @@
  *                                       (reconnect)
  */
 
-import { getDatabase, generateId, nowISO, fromSqliteDate, toSqliteDate } from "../storage/database.ts";
-import { config } from "../config.ts";
+import { getDatabase, nowISO, fromSqliteDate } from "../storage/database.ts";
 import type { Device, DeviceStatus, DeviceType, DeviceRuntimeState } from "../types/index.ts";
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -180,7 +179,8 @@ export class DeviceManager {
         heartbeat_count: existingDevice.heartbeatCount,
       });
       
-      console.log(`[DeviceManager] ↻ Device reconnected: ${deviceId} from ${sourceIp}`);
+      const name = existingDevice.displayName || deviceId;
+      console.log(`[DeviceManager] ↻ Device reconnected: ${name} (${deviceId}) from ${sourceIp}`);
       this.emit("connected", existingDevice);
       
       return existingDevice;
@@ -197,6 +197,9 @@ export class DeviceManager {
     const runtimeState: DeviceRuntimeState = {
       deviceId,
       globalDeviceId,
+      displayName: null, // Will be set via API
+      location: null, // Will be set via API
+      deviceType,
       status: "online",
       tcpConnected: true,
       lastHeartbeatAt: now,
@@ -561,17 +564,17 @@ export class DeviceManager {
         heartbeat_count, event_count, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
     `).run(
-      data.device_id,
-      data.global_device_id,
-      data.source_ip,
-      data.device_type || "disassembly",
-      data.status || "online",
-      data.tcp_connected || 0,
-      data.last_heartbeat_at,
-      data.connected_at,
-      data.first_seen_at,
-      data.heartbeat_count || 0,
-      data.event_count || 0,
+      data.device_id ?? "",
+      data.global_device_id ?? null,
+      data.source_ip ?? null,
+      data.device_type ?? "disassembly",
+      data.status ?? "online",
+      data.tcp_connected ?? 0,
+      data.last_heartbeat_at ?? null,
+      data.connected_at ?? null,
+      data.first_seen_at ?? null,
+      data.heartbeat_count ?? 0,
+      data.event_count ?? 0,
     );
   }
   
@@ -606,6 +609,9 @@ export class DeviceManager {
     return {
       deviceId: row.device_id,
       globalDeviceId: row.global_device_id,
+      displayName: row.display_name,
+      location: row.location,
+      deviceType: row.device_type as DeviceType,
       status: row.status as DeviceStatus,
       tcpConnected: row.tcp_connected === 1,
       lastHeartbeatAt: fromSqliteDate(row.last_heartbeat_at),
@@ -654,10 +660,11 @@ export class DeviceManager {
   
   /**
    * Update device configuration (display name, location, etc.)
+   * Useful for giving devices friendly names like "Sakat Tartısı"
    */
   updateDeviceConfig(deviceId: string, updates: Partial<{
-    displayName: string;
-    location: string;
+    displayName: string | null;
+    location: string | null;
     deviceType: DeviceType;
     workHoursStart: string;
     workHoursEnd: string;
@@ -668,13 +675,17 @@ export class DeviceManager {
     
     const dbUpdates: Partial<DeviceRow> = {};
     
+    // Update both in-memory state and database
     if (updates.displayName !== undefined) {
+      device.displayName = updates.displayName;
       dbUpdates.display_name = updates.displayName;
     }
     if (updates.location !== undefined) {
+      device.location = updates.location;
       dbUpdates.location = updates.location;
     }
     if (updates.deviceType !== undefined) {
+      device.deviceType = updates.deviceType;
       dbUpdates.device_type = updates.deviceType;
     }
     if (updates.workHoursStart !== undefined) {
@@ -690,7 +701,8 @@ export class DeviceManager {
     this.updateDeviceInDatabase(deviceId, dbUpdates);
     this.emit("updated", device);
     
-    console.log(`[DeviceManager] Device config updated: ${deviceId}`);
+    const name = device.displayName || deviceId;
+    console.log(`[DeviceManager] Device config updated: ${name} (${deviceId})`);
     return true;
   }
   

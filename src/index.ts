@@ -23,6 +23,7 @@ import type { SocketMeta } from "./devices/tcp-server.ts";
 import { ScaleParser, getAckResponse, toParsedScaleEvent } from "./devices/scale-parser.ts";
 import type { ParsedPacket } from "./devices/scale-parser.ts";
 import { initDeviceManager, getDeviceManager } from "./devices/device-manager.ts";
+import { initWebSocketClient, getWebSocketClient, destroyWebSocketClient } from "./cloud/index.ts";
 import type { CloudConnectionState } from "./types/index.ts";
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -145,7 +146,20 @@ function handleParsedPacket(socketId: string, packet: ParsedPacket, meta: Socket
       console.log(`[TCP] ✓ Device registered: ${deviceId} (scale #${scaleNumber}) from ${meta.remoteAddress}`);
       console.log(`[TCP]    Global ID: ${device.globalDeviceId}`);
       
-      // TODO: Notify Cloud via WebSocket (device_connected) - Issue #4
+      // Notify Cloud via WebSocket (device_connected)
+      const wsClient = getWebSocketClient();
+      if (wsClient) {
+        wsClient.send({
+          type: "device_connected",
+          payload: {
+            deviceId: device.deviceId,
+            globalDeviceId: device.globalDeviceId || device.deviceId,
+            sourceIp: meta.remoteAddress,
+            deviceType: device.deviceType,
+          },
+        });
+      }
+      
       // TODO: Check for active session in cache - Issue #5
       break;
     }
@@ -158,11 +172,24 @@ function handleParsedPacket(socketId: string, packet: ParsedPacket, meta: Socket
       
       if (device) {
         console.log(`[TCP] ♥ Heartbeat from ${device.deviceId}`);
+        
+        // Forward heartbeat to Cloud (for monitoring dashboard)
+        const wsClient = getWebSocketClient();
+        if (wsClient && wsClient.isConnected()) {
+          wsClient.send({
+            type: "device_heartbeat",
+            payload: {
+              deviceId: device.deviceId,
+              globalDeviceId: device.globalDeviceId || device.deviceId,
+              status: device.status,
+              heartbeatCount: device.heartbeatCount,
+              timestamp: new Date().toISOString(),
+            },
+          });
+        }
       } else {
         console.log(`[TCP] ♥ Heartbeat from unregistered socket ${socketId}`);
       }
-      
-      // TODO: Forward heartbeat to Cloud (for monitoring dashboard) - Issue #4
       break;
     }
     
@@ -239,7 +266,18 @@ function handleTCPDisconnect(socketId: string, meta: SocketMeta, reason: string)
   // Disconnect device via DeviceManager
   deviceManager.disconnectDevice(socketId, reason);
   
-  // TODO: Notify Cloud via WebSocket (device_disconnected) - Issue #4
+  // Notify Cloud via WebSocket (device_disconnected)
+  const wsClient = getWebSocketClient();
+  if (wsClient) {
+    wsClient.send({
+      type: "device_disconnected",
+      payload: {
+        deviceId: deviceId,
+        reason: reason,
+        timestamp: new Date().toISOString(),
+      },
+    });
+  }
 }
 
 /**
@@ -339,13 +377,77 @@ async function main() {
   console.log(`[INIT] ✓ TCP Server listening on ${config.tcp.host}:${config.tcp.port}`);
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // Cloud WebSocket Connection (Placeholder - Issue #4)
+  // Cloud WebSocket Connection
   // ─────────────────────────────────────────────────────────────────────────────
-  console.log("[INIT] Cloud WebSocket connection...");
-  console.log(`[CLOUD] ⚠️  WebSocket connector not yet implemented (Issue #4)`);
-  console.log(`[CLOUD]    Will connect to: ${config.websocket.url}`);
-  state.cloudConnection = "disconnected";
-  state.offlineMode = true; // Start in offline mode until connected
+  console.log("[INIT] Initializing Cloud WebSocket connection...");
+  
+  const wsClient = initWebSocketClient({
+    url: config.websocket.url,
+    edgeIdentity: state.edgeId ? {
+      edgeId: state.edgeId,
+      siteId: state.siteId || "",
+      siteName: state.siteName || "",
+      registeredAt: new Date(),
+    } : null,
+    autoConnect: false, // We'll connect after setup
+    queueWhenDisconnected: true,
+  });
+  
+  // Set up WebSocket event handlers
+  wsClient.on("connected", () => {
+    console.log("[CLOUD] ✓ Connected to Cloud");
+    state.cloudConnection = "connected";
+    state.offlineMode = false;
+  });
+  
+  wsClient.on("disconnected", (data: { reason?: string; code?: number }) => {
+    console.log(`[CLOUD] Disconnected from Cloud: ${data.reason || "unknown"}`);
+    state.cloudConnection = "disconnected";
+    state.offlineMode = true;
+  });
+  
+  wsClient.on("reconnecting", (data: { attempt: number; delay: number }) => {
+    console.log(`[CLOUD] Reconnecting... (attempt #${data.attempt}, next in ${data.delay / 1000}s)`);
+    state.cloudConnection = "reconnecting";
+  });
+  
+  wsClient.on("error", (data: { error: string }) => {
+    console.error(`[CLOUD] Error: ${data.error}`);
+    state.cloudConnection = "error";
+  });
+  
+  wsClient.on("state_change", (data: { previousStatus: string; currentStatus: CloudConnectionState }) => {
+    state.cloudConnection = data.currentStatus;
+  });
+  
+  // Handle incoming messages from Cloud
+  wsClient.onMessage("session_started", (payload) => {
+    console.log(`[CLOUD] ← Session started: ${JSON.stringify(payload)}`);
+    // TODO: Cache session locally - Issue #5
+  });
+  
+  wsClient.onMessage("session_ended", (payload) => {
+    console.log(`[CLOUD] ← Session ended: ${JSON.stringify(payload)}`);
+    // TODO: Remove from session cache - Issue #5
+  });
+  
+  wsClient.onMessage("plu_updated", (payload) => {
+    console.log(`[CLOUD] ← PLU updated: ${JSON.stringify(payload)}`);
+    // TODO: Update local PLU cache
+  });
+  
+  wsClient.onMessage("config_update", (payload) => {
+    console.log(`[CLOUD] ← Config update: ${JSON.stringify(payload)}`);
+    // TODO: Apply configuration changes
+  });
+  
+  // Start connection attempt
+  console.log(`[CLOUD] Connecting to: ${config.websocket.url}`);
+  wsClient.connect();
+  
+  // Start in offline mode until connected
+  state.cloudConnection = wsClient.getStatus();
+  state.offlineMode = !wsClient.isConnected();
 
   // ─────────────────────────────────────────────────────────────────────────────
   // Start HTTP Server (Admin Dashboard & API)
@@ -356,13 +458,13 @@ async function main() {
     port: config.http.port,
     hostname: config.http.host,
     
-    fetch(req: Request): Response {
+    async fetch(req: Request): Promise<Response> {
       const url = new URL(req.url);
       const path = url.pathname;
       
       // API Routes
       if (path.startsWith("/api/")) {
-        return handleApi(req, path);
+        return await handleApi(req, path);
       }
       
       // Health check
@@ -487,6 +589,9 @@ async function shutdown(): Promise<void> {
   console.log("[SHUTDOWN] Stopping heartbeat monitor...");
   stopHeartbeatMonitor();
   
+  console.log("[SHUTDOWN] Closing WebSocket connection...");
+  destroyWebSocketClient();
+  
   console.log("[SHUTDOWN] Closing TCP server...");
   if (tcpServer) {
     await tcpServer.stop();
@@ -508,11 +613,14 @@ async function shutdown(): Promise<void> {
 // API HANDLER
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function handleApi(req: Request, path: string): Response {
+async function handleApi(req: Request, path: string): Promise<Response> {
   const deviceManager = getDeviceManager();
   
   // GET /api/status - System status
   if (path === "/api/status" && req.method === "GET") {
+    const wsClient = getWebSocketClient();
+    const wsState = wsClient?.getState();
+    
     return Response.json({
       success: true,
       data: {
@@ -522,13 +630,20 @@ function handleApi(req: Request, path: string): Response {
         devices: deviceManager.getStatusSummary(),
         activeSessions: 0, // TODO: Count from cache - Issue #5
         pendingOfflineBatches: 0, // TODO: Count from database - Issue #7
-        pendingEventSync: 0, // TODO: Count from database - Issue #8
+        pendingEventSync: wsClient?.getQueueSize() || 0,
         cloudConnection: state.cloudConnection,
         offlineMode: state.offlineMode,
         pluUpdateNeeded: false,
         uptime: (Date.now() - state.startedAt.getTime()) / 1000,
         version: "0.3.0",
         tcp: tcpServer?.getStats() || null,
+        websocket: wsState ? {
+          status: wsState.status,
+          lastConnected: wsState.lastConnected?.toISOString() || null,
+          lastError: wsState.lastError,
+          reconnectAttempts: wsState.reconnectAttempts,
+          queuedMessages: wsClient?.getQueueSize() || 0,
+        } : null,
       },
     });
   }
@@ -540,6 +655,9 @@ function handleApi(req: Request, path: string): Response {
       data: deviceManager.getAllDevices().map(device => ({
         deviceId: device.deviceId,
         globalDeviceId: device.globalDeviceId,
+        displayName: device.displayName,
+        location: device.location,
+        deviceType: device.deviceType,
         status: device.status,
         tcpConnected: device.tcpConnected,
         sourceIp: device.sourceIp,
@@ -551,6 +669,45 @@ function handleApi(req: Request, path: string): Response {
         connectedAt: device.connectedAt?.toISOString() || null,
       })),
     });
+  }
+  
+  // PUT /api/devices/:deviceId - Update device config (rename, location, etc.)
+  const deviceUpdateMatch = path.match(/^\/api\/devices\/([A-Za-z0-9-]+)$/);
+  if (deviceUpdateMatch && req.method === "PUT") {
+    const deviceId = deviceUpdateMatch[1];
+    
+    try {
+      const body = await req.json() as {
+        displayName?: string | null;
+        location?: string | null;
+        deviceType?: string;
+      };
+      
+      const success = deviceManager.updateDeviceConfig(deviceId, {
+        displayName: body.displayName,
+        location: body.location,
+        deviceType: body.deviceType as "disassembly" | "retail" | "receiving" | undefined,
+      });
+      
+      if (!success) {
+        return Response.json({ success: false, error: "Device not found" }, { status: 404 });
+      }
+      
+      const device = deviceManager.getDevice(deviceId);
+      return Response.json({
+        success: true,
+        data: device ? {
+          deviceId: device.deviceId,
+          globalDeviceId: device.globalDeviceId,
+          displayName: device.displayName,
+          location: device.location,
+          deviceType: device.deviceType,
+          status: device.status,
+        } : null,
+      });
+    } catch (e) {
+      return Response.json({ success: false, error: "Invalid request body" }, { status: 400 });
+    }
   }
   
   // GET /api/tcp/connections - List active TCP connections
@@ -735,20 +892,91 @@ function getAdminDashboardHtml(): string {
       padding: 0.75rem;
       background: var(--bg-secondary);
       border-radius: 6px;
+      transition: background 0.2s;
     }
+    .device-item:hover { background: var(--bg-card); }
     
-    .device-status { width: 8px; height: 8px; border-radius: 50%; }
+    .device-status { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
     .device-status.online { background: var(--accent-green); }
+    .device-status.idle { background: var(--accent-blue); }
     .device-status.stale { background: var(--accent-orange); }
     .device-status.disconnected { background: var(--accent-red); }
     
-    .device-info { flex: 1; }
-    .device-name { font-weight: 600; font-size: 0.85rem; }
-    .device-meta { font-size: 0.7rem; color: var(--text-secondary); }
+    .device-info { flex: 1; min-width: 0; }
+    .device-name { font-weight: 600; font-size: 0.85rem; display: flex; align-items: center; gap: 0.5rem; }
+    .device-name .device-id { color: var(--text-secondary); font-weight: 400; font-size: 0.75rem; }
+    .device-meta { font-size: 0.7rem; color: var(--text-secondary); margin-top: 0.25rem; }
+    .device-location { color: var(--accent-blue); }
+    .device-stats { display: flex; gap: 1rem; margin-top: 0.25rem; }
+    .device-stats span { font-size: 0.65rem; color: var(--text-muted); }
+    
+    .device-actions { display: flex; gap: 0.5rem; }
+    .btn-edit {
+      background: transparent;
+      border: 1px solid var(--border-color);
+      color: var(--text-secondary);
+      padding: 0.35rem 0.6rem;
+      border-radius: 4px;
+      font-size: 0.7rem;
+      cursor: pointer;
+      font-family: inherit;
+      transition: all 0.2s;
+    }
+    .btn-edit:hover { background: var(--bg-card); color: var(--text-primary); border-color: var(--accent-blue); }
     
     .empty-state { text-align: center; padding: 2rem; color: var(--text-secondary); }
     .empty-icon { font-size: 2rem; margin-bottom: 0.75rem; opacity: 0.5; }
     .empty-text { font-size: 0.8rem; }
+    
+    /* Modal */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.7);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+    }
+    .modal-overlay.open { display: flex; }
+    .modal {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 1.5rem;
+      width: 90%;
+      max-width: 400px;
+    }
+    .modal-title { font-size: 1rem; font-weight: 600; margin-bottom: 1rem; }
+    .form-group { margin-bottom: 1rem; }
+    .form-label { display: block; font-size: 0.7rem; color: var(--text-secondary); margin-bottom: 0.35rem; text-transform: uppercase; letter-spacing: 0.5px; }
+    .form-input {
+      width: 100%;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: 4px;
+      padding: 0.6rem 0.8rem;
+      color: var(--text-primary);
+      font-family: inherit;
+      font-size: 0.85rem;
+    }
+    .form-input:focus { outline: none; border-color: var(--accent-blue); }
+    .form-hint { font-size: 0.65rem; color: var(--text-muted); margin-top: 0.25rem; }
+    .modal-actions { display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 1.25rem; }
+    .btn {
+      padding: 0.5rem 1rem;
+      border-radius: 4px;
+      font-size: 0.8rem;
+      cursor: pointer;
+      font-family: inherit;
+      font-weight: 600;
+      transition: all 0.2s;
+    }
+    .btn-cancel { background: transparent; border: 1px solid var(--border-color); color: var(--text-secondary); }
+    .btn-cancel:hover { background: var(--bg-secondary); color: var(--text-primary); }
+    .btn-primary { background: var(--accent-green-muted); border: none; color: var(--text-primary); }
+    .btn-primary:hover { background: var(--accent-green); }
+    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
     
     .card-wide { grid-column: span 2; }
     @media (max-width: 768px) { .card-wide { grid-column: span 1; } }
@@ -824,53 +1052,171 @@ function getAdminDashboardHtml(): string {
   
   <footer>CarniTrack Edge v0.3.0 • Admin Dashboard • Refresh: 3s</footer>
   
+  <!-- Edit Device Modal -->
+  <div class="modal-overlay" id="edit-modal">
+    <div class="modal">
+      <div class="modal-title">📝 Cihaz Düzenle</div>
+      <form id="edit-form">
+        <input type="hidden" id="edit-device-id">
+        <div class="form-group">
+          <label class="form-label">Cihaz Adı</label>
+          <input type="text" class="form-input" id="edit-display-name" placeholder="örn: Sakat Tartısı">
+          <div class="form-hint">Kullanıcı dostu isim (boş bırakılabilir)</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Konum</label>
+          <input type="text" class="form-input" id="edit-location" placeholder="örn: Kesimhane A Bölümü">
+          <div class="form-hint">Cihazın fiziksel konumu</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Tip</label>
+          <select class="form-input" id="edit-device-type">
+            <option value="disassembly">Parçalama (Disassembly)</option>
+            <option value="retail">Perakende (Retail)</option>
+            <option value="receiving">Kabul (Receiving)</option>
+          </select>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-cancel" onclick="closeModal()">İptal</button>
+          <button type="submit" class="btn btn-primary" id="save-btn">Kaydet</button>
+        </div>
+      </form>
+    </div>
+  </div>
+  
   <script>
+    let devices = [];
+    
     async function update() {
       try {
-        const res = await fetch('/api/status');
-        const { data } = await res.json();
+        // Fetch status for stats
+        const statusRes = await fetch('/api/status');
+        const { data: statusData } = await statusRes.json();
         
-        const devCount = Object.keys(data.devices).length;
+        // Fetch detailed device info
+        const devRes = await fetch('/api/devices');
+        const { data: devData } = await devRes.json();
+        devices = devData || [];
+        
+        const devCount = devices.filter(d => d.tcpConnected).length;
         document.getElementById('device-count').textContent = devCount;
-        document.getElementById('session-count').textContent = data.activeSessions;
-        document.getElementById('pending-count').textContent = data.pendingEventSync;
-        document.getElementById('batch-count').textContent = data.pendingOfflineBatches;
+        document.getElementById('session-count').textContent = statusData.activeSessions;
+        document.getElementById('pending-count').textContent = statusData.pendingEventSync;
+        document.getElementById('batch-count').textContent = statusData.pendingOfflineBatches;
         
         const dot = document.getElementById('cloud-dot');
         const status = document.getElementById('cloud-status');
         const badge = document.getElementById('mode-badge');
         
-        if (data.cloudConnection === 'connected') {
+        if (statusData.cloudConnection === 'connected') {
           dot.className = 'status-dot online';
           status.textContent = 'Cloud: Connected';
           badge.className = 'badge badge-online';
           badge.textContent = 'ONLINE';
         } else {
           dot.className = 'status-dot offline';
-          status.textContent = 'Cloud: ' + data.cloudConnection;
+          status.textContent = 'Cloud: ' + statusData.cloudConnection;
           badge.className = 'badge badge-offline';
           badge.textContent = 'OFFLINE';
         }
         
-        document.getElementById('edge-id').textContent = data.edgeId 
-          ? 'Edge: ' + data.edgeId.substring(0, 8) + '...'
+        document.getElementById('edge-id').textContent = statusData.edgeId 
+          ? 'Edge: ' + statusData.edgeId.substring(0, 8) + '...'
           : 'Edge: Not Registered';
         
-        const list = document.getElementById('device-list');
-        if (devCount === 0) {
-          list.innerHTML = '<div class="empty-state"><div class="empty-icon">📡</div><div class="empty-text">Waiting for scale connections...</div></div>';
-        } else {
-          list.innerHTML = Object.entries(data.devices).map(([id, st]) => 
-            '<div class="device-item"><div class="device-status ' + st + '"></div><div class="device-info"><div class="device-name">' + id + '</div><div class="device-meta">Status: ' + st + '</div></div></div>'
-          ).join('');
-        }
+        renderDevices();
         
-        if (data.tcp) {
+        if (statusData.tcp) {
           document.getElementById('tcp-stats').innerHTML = 
-            'Connections: ' + data.tcp.connectionCount + ' | Total: ' + data.tcp.totalConnections + ' | Received: ' + formatBytes(data.tcp.totalBytesReceived);
+            'Connections: ' + statusData.tcp.connectionCount + ' | Total: ' + statusData.tcp.totalConnections + ' | Received: ' + formatBytes(statusData.tcp.totalBytesReceived);
         }
       } catch (e) { console.error('Update failed:', e); }
     }
+    
+    function renderDevices() {
+      const list = document.getElementById('device-list');
+      if (devices.length === 0) {
+        list.innerHTML = '<div class="empty-state"><div class="empty-icon">📡</div><div class="empty-text">Waiting for scale connections...</div></div>';
+        return;
+      }
+      
+      list.innerHTML = devices.map(d => {
+        const name = d.displayName || d.deviceId;
+        const showId = d.displayName ? '<span class="device-id">(' + d.deviceId + ')</span>' : '';
+        const location = d.location ? '<span class="device-location">📍 ' + d.location + '</span>' : '';
+        const stats = '<div class="device-stats"><span>💓 ' + d.heartbeatCount + '</span><span>📦 ' + d.eventCount + '</span></div>';
+        
+        return '<div class="device-item">' +
+          '<div class="device-status ' + d.status + '"></div>' +
+          '<div class="device-info">' +
+            '<div class="device-name">' + name + ' ' + showId + '</div>' +
+            '<div class="device-meta">' + (location || 'Durum: ' + d.status) + '</div>' +
+            stats +
+          '</div>' +
+          '<div class="device-actions">' +
+            '<button class="btn-edit" onclick="editDevice(\\'' + d.deviceId + '\\')">✏️ Düzenle</button>' +
+          '</div>' +
+        '</div>';
+      }).join('');
+    }
+    
+    function editDevice(deviceId) {
+      const device = devices.find(d => d.deviceId === deviceId);
+      if (!device) return;
+      
+      document.getElementById('edit-device-id').value = deviceId;
+      document.getElementById('edit-display-name').value = device.displayName || '';
+      document.getElementById('edit-location').value = device.location || '';
+      document.getElementById('edit-device-type').value = device.deviceType || 'disassembly';
+      
+      document.getElementById('edit-modal').classList.add('open');
+    }
+    
+    function closeModal() {
+      document.getElementById('edit-modal').classList.remove('open');
+    }
+    
+    document.getElementById('edit-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = document.getElementById('save-btn');
+      btn.disabled = true;
+      btn.textContent = 'Kaydediliyor...';
+      
+      try {
+        const deviceId = document.getElementById('edit-device-id').value;
+        const res = await fetch('/api/devices/' + deviceId, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            displayName: document.getElementById('edit-display-name').value || null,
+            location: document.getElementById('edit-location').value || null,
+            deviceType: document.getElementById('edit-device-type').value,
+          })
+        });
+        
+        if (res.ok) {
+          closeModal();
+          await update();
+        } else {
+          alert('Kaydetme başarısız!');
+        }
+      } catch (err) {
+        alert('Hata: ' + err.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Kaydet';
+      }
+    });
+    
+    // Close modal on overlay click
+    document.getElementById('edit-modal').addEventListener('click', (e) => {
+      if (e.target.id === 'edit-modal') closeModal();
+    });
+    
+    // Close modal on Escape
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') closeModal();
+    });
     
     function formatBytes(b) {
       if (!b) return '0 B';

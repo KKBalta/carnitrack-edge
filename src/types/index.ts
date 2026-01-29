@@ -115,6 +115,12 @@ export interface Device {
 export interface DeviceRuntimeState {
   deviceId: string;
   globalDeviceId: string | null;
+  /** Custom display name (e.g., "Sakat Tartısı", "Kesimhane Terazi 1") */
+  displayName: string | null;
+  /** Physical location (e.g., "Kesimhane A Bölümü") */
+  location: string | null;
+  /** Device type for categorization */
+  deviceType: DeviceType;
   status: DeviceStatus;
   tcpConnected: boolean;
   lastHeartbeatAt: Date | null;
@@ -391,7 +397,8 @@ export type CloudToEdgeMessageType =
   | "event_ack"           // Acknowledgment of received event
   | "event_rejected"      // Event rejected (duplicate, invalid, etc.)
   | "config_update"       // Edge configuration changed
-  | "ping";               // Keep-alive ping
+  | "ping"                // Keep-alive ping
+  | "pong";               // Keep-alive pong response
 
 /** Message types from Edge to Cloud */
 export type EdgeToCloudMessageType = 
@@ -404,6 +411,7 @@ export type EdgeToCloudMessageType =
   | "offline_batch_start" // Starting offline mode
   | "offline_batch_end"   // Ending offline mode
   | "status"              // Edge status update
+  | "ping"                // Keep-alive ping (Edge-initiated)
   | "pong";               // Keep-alive pong
 
 /** Base message structure for Cloud ↔ Edge communication */

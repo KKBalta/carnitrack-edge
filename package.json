@@ -9,7 +9,9 @@
     "start": "bun run src/index.ts",
     "test": "bun test",
     "db:setup": "bun run src/storage/setup.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "mock:cloud": "bun run src/cloud/mock-server.ts",
+    "dev:all": "bun run mock:cloud & sleep 1 && bun run dev"
   },
   "dependencies": {},
   "devDependencies": {
