@@ -20,6 +20,8 @@ import { config } from "./config.ts";
 import { initDatabase, closeDatabase, getAllEdgeConfig } from "./storage/database.ts";
 import { TCPServer, setGlobalTCPServer } from "./devices/tcp-server.ts";
 import type { SocketMeta } from "./devices/tcp-server.ts";
+import { ScaleParser, getAckResponse, toParsedScaleEvent } from "./devices/scale-parser.ts";
+import type { ParsedPacket } from "./devices/scale-parser.ts";
 import type { CloudConnectionState, DeviceStatus } from "./types/index.ts";
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -75,6 +77,9 @@ const state: EdgeState = {
 let tcpServer: TCPServer | null = null;
 let httpServer: ReturnType<typeof Bun.serve> | null = null;
 
+// Scale packet parser (handles TCP stream buffering)
+const scaleParser = new ScaleParser();
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // BANNER
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -109,23 +114,34 @@ function handleTCPConnection(socketId: string, meta: SocketMeta): void {
 
 /**
  * Handle data received from scale
+ * Uses ScaleParser for proper TCP stream buffering and packet parsing
  */
 function handleTCPData(socketId: string, data: Buffer, meta: SocketMeta): void {
-  // Convert buffer to string and split by lines (handle multiple messages)
-  const rawData = data.toString("utf-8");
-  const messages = rawData.split(/\r?\n/).filter((msg: string) => msg.trim());
+  // Parse incoming data using the ScaleParser (handles buffering, partial packets)
+  const result = scaleParser.parse(socketId, data);
   
-  for (const message of messages) {
-    const trimmedMessage = message.trim();
-    if (!trimmedMessage) continue;
-    
-    console.log(`[TCP] Received from ${meta.deviceId || meta.remoteAddress}: ${trimmedMessage.substring(0, 100)}`);
-    
+  // Log any parse errors
+  for (const error of result.errors) {
+    console.warn(`[TCP] Parse error: ${error.reason} on line ${error.index}: ${error.line}`);
+  }
+  
+  // Process each parsed packet
+  for (const packet of result.packets) {
+    handleParsedPacket(socketId, packet, meta);
+  }
+}
+
+/**
+ * Handle a single parsed packet from the scale
+ */
+function handleParsedPacket(socketId: string, packet: ParsedPacket, meta: SocketMeta): void {
+  switch (packet.type) {
     // ─────────────────────────────────────────────────────────────────────────
-    // Check for registration packet (e.g., "SCALE-01")
+    // Registration packet (e.g., "SCALE-01")
     // ─────────────────────────────────────────────────────────────────────────
-    if (config.heartbeat.registrationPattern.test(trimmedMessage)) {
-      const deviceId = trimmedMessage;
+    case "registration": {
+      const { deviceId, scaleNumber } = packet;
+      console.log(`[TCP] Received from ${meta.remoteAddress}: ${packet.raw}`);
       
       // Update socket metadata with device ID
       if (tcpServer) {
@@ -144,7 +160,7 @@ function handleTCPData(socketId: string, data: Buffer, meta: SocketMeta): void {
         existingDevice.tcpConnected = true;
         existingDevice.status = "online";
         existingDevice.lastHeartbeatAt = new Date();
-        console.log(`[TCP] Device reconnected: ${deviceId}`);
+        console.log(`[TCP] Device reconnected: ${deviceId} (scale #${scaleNumber})`);
       } else {
         // New device registration
         state.devices.set(deviceId, {
@@ -156,20 +172,19 @@ function handleTCPData(socketId: string, data: Buffer, meta: SocketMeta): void {
           lastEventAt: null,
           activeCloudSessionId: null,
         });
-        console.log(`[TCP] ✓ Device registered: ${deviceId} from ${meta.remoteAddress}`);
+        console.log(`[TCP] ✓ Device registered: ${deviceId} (scale #${scaleNumber}) from ${meta.remoteAddress}`);
       }
       
       // TODO: Notify Cloud via WebSocket (device_connected) - Issue #4
       // TODO: Check for active session in cache - Issue #5
       // TODO: Persist device to database - Issue #3
-      
-      continue;
+      break;
     }
     
     // ─────────────────────────────────────────────────────────────────────────
-    // Check for heartbeat ("HB")
+    // Heartbeat ("HB")
     // ─────────────────────────────────────────────────────────────────────────
-    if (trimmedMessage === config.heartbeat.heartbeatString) {
+    case "heartbeat": {
       const deviceId = meta.deviceId || state.socketToDevice.get(socketId);
       
       if (deviceId && state.devices.has(deviceId)) {
@@ -182,43 +197,63 @@ function handleTCPData(socketId: string, data: Buffer, meta: SocketMeta): void {
       }
       
       // TODO: Forward heartbeat to Cloud (for monitoring dashboard) - Issue #4
-      
-      continue;
+      break;
     }
     
     // ─────────────────────────────────────────────────────────────────────────
-    // Check for "KONTROLLU AKTAR OK?" prompt (scale protocol)
+    // Acknowledgment request ("KONTROLLU AKTAR OK?")
     // ─────────────────────────────────────────────────────────────────────────
-    if (trimmedMessage.includes("KONTROLLU AKTAR OK?")) {
+    case "ack_request": {
       console.log(`[TCP] Scale prompt received, sending OK`);
       if (tcpServer) {
-        tcpServer.send(socketId, "OK\n");
+        tcpServer.send(socketId, getAckResponse());
       }
-      continue;
+      break;
     }
     
     // ─────────────────────────────────────────────────────────────────────────
-    // Otherwise it's a weighing event
+    // Weighing event (parsed CSV data)
     // ─────────────────────────────────────────────────────────────────────────
-    const deviceId = meta.deviceId || state.socketToDevice.get(socketId);
-    console.log(`[TCP] ⚖️  Weight event from ${deviceId || "unknown"}`);
-    console.log(`[TCP]    Raw: ${trimmedMessage.substring(0, 150)}${trimmedMessage.length > 150 ? "..." : ""}`);
-    
-    // Update device last event time
-    if (deviceId && state.devices.has(deviceId)) {
-      const device = state.devices.get(deviceId)!;
-      device.lastEventAt = new Date();
+    case "weighing_event": {
+      const deviceId = meta.deviceId || state.socketToDevice.get(socketId);
+      const eventData = packet.event;
+      
+      console.log(`[TCP] ⚖️  Weight event from ${deviceId || "unknown"}`);
+      console.log(`[TCP]    PLU: ${eventData.pluCode} | Product: ${eventData.productName.trim()}`);
+      console.log(`[TCP]    Weight: ${eventData.weightGrams}g | Barcode: ${eventData.barcode}`);
+      console.log(`[TCP]    Time: ${eventData.time} ${eventData.date} | Operator: ${eventData.operator.trim()}`);
+      
+      // Update device last event time
+      if (deviceId && state.devices.has(deviceId)) {
+        const device = state.devices.get(deviceId)!;
+        device.lastEventAt = new Date();
+      }
+      
+      // Convert to ParsedScaleEvent for further processing
+      // This will be used by Event Processor (Issue #6) and Cloud Sync (Issue #8)
+      const _parsedEvent = toParsedScaleEvent(eventData);
+      void _parsedEvent; // Suppress unused warning until Issue #6 implemented
+      
+      // TODO: Check for active session in cache - Issue #5
+      // TODO: If offline mode, create/add to offline batch - Issue #7
+      // TODO: Store event locally (with session/batch linkage) - Issue #6
+      // TODO: Stream to Cloud via WebSocket (if connected) - Issue #8
+      
+      // Send acknowledgment
+      if (tcpServer) {
+        tcpServer.send(socketId, getAckResponse());
+      }
+      break;
     }
     
-    // TODO: Parse event data (DP-401 format) - Issue #2
-    // TODO: Check for active session in cache - Issue #5
-    // TODO: If offline mode, create/add to offline batch - Issue #7
-    // TODO: Store event locally - Issue #6
-    // TODO: Stream to Cloud via WebSocket (if connected) - Issue #8
-    
-    // Send acknowledgment
-    if (tcpServer) {
-      tcpServer.send(socketId, "OK\n");
+    // ─────────────────────────────────────────────────────────────────────────
+    // Unknown packet
+    // ─────────────────────────────────────────────────────────────────────────
+    case "unknown": {
+      const deviceId = meta.deviceId || state.socketToDevice.get(socketId);
+      console.log(`[TCP] Unknown packet from ${deviceId || socketId}: ${packet.raw.substring(0, 100)}...`);
+      console.log(`[TCP]    Reason: ${packet.reason}`);
+      break;
     }
   }
 }
@@ -230,6 +265,9 @@ function handleTCPDisconnect(socketId: string, meta: SocketMeta, reason: string)
   const deviceId = meta.deviceId || state.socketToDevice.get(socketId);
   
   console.log(`[TCP] Connection closed: ${deviceId || socketId} - ${reason}`);
+  
+  // Clear parser buffer for this socket
+  scaleParser.clearBuffer(socketId);
   
   // Clean up socket → device mapping
   state.socketToDevice.delete(socketId);
