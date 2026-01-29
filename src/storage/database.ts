@@ -2,7 +2,7 @@
  * CarniTrack Edge Database Setup
  * 
  * SQLite database initialization and schema management.
- * Uses better-sqlite3 for synchronous, high-performance operations.
+ * Uses Bun's native bun:sqlite for synchronous, high-performance operations.
  * 
  * Architecture v3.0 (Cloud-Centric):
  * - Sessions are managed by Cloud, Edge only caches active sessions
@@ -11,7 +11,7 @@
  * - Edge identity stored locally for multi-site support
  */
 
-import Database from "better-sqlite3";
+import { Database } from "bun:sqlite";
 import { config } from "../config.ts";
 import { mkdirSync, existsSync } from "fs";
 import { dirname } from "path";
@@ -256,12 +256,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_events_dedup
 // DATABASE CLASS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-let db: Database.Database | null = null;
+let db: Database | null = null;
 
 /**
  * Get the database instance (singleton)
  */
-export function getDatabase(): Database.Database {
+export function getDatabase(): Database {
   if (!db) {
     db = initDatabase();
   }
@@ -271,7 +271,7 @@ export function getDatabase(): Database.Database {
 /**
  * Initialize the database connection and schema
  */
-export function initDatabase(): Database.Database {
+export function initDatabase(): Database {
   const dbPath = config.database.path;
   
   // Ensure data directory exists
@@ -282,21 +282,19 @@ export function initDatabase(): Database.Database {
   }
   
   // Open database connection
-  const database = new Database(dbPath, {
-    // Enable verbose logging in development
-    verbose: config.logging.level === "debug" 
-      ? (msg) => console.log(`[DB] ${msg}`) 
-      : undefined,
-  });
+  const database = new Database(dbPath, { create: true });
   
   // Enable WAL mode for better concurrent performance
-  database.pragma("journal_mode = WAL");
+  database.exec("PRAGMA journal_mode = WAL");
   
   // Enable foreign keys
-  database.pragma("foreign_keys = ON");
+  database.exec("PRAGMA foreign_keys = ON");
   
   // Run schema
   database.exec(SCHEMA);
+  
+  // Store reference
+  db = database;
   
   console.log(`[DB] Database initialized at: ${dbPath}`);
   console.log(`[DB] Schema version: 3.0 (Cloud-Centric)`);

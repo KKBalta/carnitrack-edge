@@ -14,16 +14,12 @@
  * - Operates in offline mode when Cloud is unreachable
  * - Groups offline events into batches for later reconciliation
  * - Provides minimal admin dashboard for debugging/monitoring
- * 
- * Key differences from v2:
- * - Sessions are NO LONGER managed by Edge
- * - Operators start sessions from Phone App via Cloud
- * - Edge receives session info via WebSocket push
- * - Offline events are captured with batch ID for later matching
  */
 
 import { config } from "./config.ts";
-import { initDatabase, closeDatabase, getEdgeConfig, getAllEdgeConfig } from "./storage/database.ts";
+import { initDatabase, closeDatabase, getAllEdgeConfig } from "./storage/database.ts";
+import { TCPServer, setGlobalTCPServer } from "./devices/tcp-server.ts";
+import type { SocketMeta } from "./devices/tcp-server.ts";
 import type { CloudConnectionState, DeviceStatus } from "./types/index.ts";
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -47,6 +43,7 @@ interface EdgeState {
   
   /** Connected devices (deviceId → runtime state) */
   devices: Map<string, {
+    socketId: string;
     sourceIp: string;
     status: DeviceStatus;
     tcpConnected: boolean;
@@ -54,6 +51,9 @@ interface EdgeState {
     lastEventAt: Date | null;
     activeCloudSessionId: string | null;
   }>;
+  
+  /** Socket to device mapping (socketId → deviceId) */
+  socketToDevice: Map<string, string>;
   
   /** Startup time */
   startedAt: Date;
@@ -67,8 +67,13 @@ const state: EdgeState = {
   offlineMode: false,
   currentOfflineBatchId: null,
   devices: new Map(),
+  socketToDevice: new Map(),
   startedAt: new Date(),
 };
+
+// References to servers for graceful shutdown
+let tcpServer: TCPServer | null = null;
+let httpServer: ReturnType<typeof Bun.serve> | null = null;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // BANNER
@@ -92,13 +97,169 @@ const BANNER = `
 `;
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// TCP EVENT HANDLERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Handle new TCP connection from scale
+ */
+function handleTCPConnection(socketId: string, meta: SocketMeta): void {
+  console.log(`[TCP] New connection: ${socketId} from ${meta.remoteAddress}`);
+}
+
+/**
+ * Handle data received from scale
+ */
+function handleTCPData(socketId: string, data: Buffer, meta: SocketMeta): void {
+  // Convert buffer to string and split by lines (handle multiple messages)
+  const rawData = data.toString("utf-8");
+  const messages = rawData.split(/\r?\n/).filter((msg: string) => msg.trim());
+  
+  for (const message of messages) {
+    const trimmedMessage = message.trim();
+    if (!trimmedMessage) continue;
+    
+    console.log(`[TCP] Received from ${meta.deviceId || meta.remoteAddress}: ${trimmedMessage.substring(0, 100)}`);
+    
+    // ─────────────────────────────────────────────────────────────────────────
+    // Check for registration packet (e.g., "SCALE-01")
+    // ─────────────────────────────────────────────────────────────────────────
+    if (config.heartbeat.registrationPattern.test(trimmedMessage)) {
+      const deviceId = trimmedMessage;
+      
+      // Update socket metadata with device ID
+      if (tcpServer) {
+        tcpServer.updateSocketMeta(socketId, { deviceId });
+      }
+      
+      // Track socket → device mapping
+      state.socketToDevice.set(socketId, deviceId);
+      
+      // Update or create device state
+      const existingDevice = state.devices.get(deviceId);
+      if (existingDevice) {
+        // Reconnection - update existing device
+        existingDevice.socketId = socketId;
+        existingDevice.sourceIp = meta.remoteAddress;
+        existingDevice.tcpConnected = true;
+        existingDevice.status = "online";
+        existingDevice.lastHeartbeatAt = new Date();
+        console.log(`[TCP] Device reconnected: ${deviceId}`);
+      } else {
+        // New device registration
+        state.devices.set(deviceId, {
+          socketId,
+          sourceIp: meta.remoteAddress,
+          status: "online",
+          tcpConnected: true,
+          lastHeartbeatAt: new Date(),
+          lastEventAt: null,
+          activeCloudSessionId: null,
+        });
+        console.log(`[TCP] ✓ Device registered: ${deviceId} from ${meta.remoteAddress}`);
+      }
+      
+      // TODO: Notify Cloud via WebSocket (device_connected) - Issue #4
+      // TODO: Check for active session in cache - Issue #5
+      // TODO: Persist device to database - Issue #3
+      
+      continue;
+    }
+    
+    // ─────────────────────────────────────────────────────────────────────────
+    // Check for heartbeat ("HB")
+    // ─────────────────────────────────────────────────────────────────────────
+    if (trimmedMessage === config.heartbeat.heartbeatString) {
+      const deviceId = meta.deviceId || state.socketToDevice.get(socketId);
+      
+      if (deviceId && state.devices.has(deviceId)) {
+        const device = state.devices.get(deviceId)!;
+        device.lastHeartbeatAt = new Date();
+        device.status = "online";
+        console.log(`[TCP] ♥ Heartbeat from ${deviceId}`);
+      } else {
+        console.log(`[TCP] ♥ Heartbeat from unregistered socket ${socketId}`);
+      }
+      
+      // TODO: Forward heartbeat to Cloud (for monitoring dashboard) - Issue #4
+      
+      continue;
+    }
+    
+    // ─────────────────────────────────────────────────────────────────────────
+    // Check for "KONTROLLU AKTAR OK?" prompt (scale protocol)
+    // ─────────────────────────────────────────────────────────────────────────
+    if (trimmedMessage.includes("KONTROLLU AKTAR OK?")) {
+      console.log(`[TCP] Scale prompt received, sending OK`);
+      if (tcpServer) {
+        tcpServer.send(socketId, "OK\n");
+      }
+      continue;
+    }
+    
+    // ─────────────────────────────────────────────────────────────────────────
+    // Otherwise it's a weighing event
+    // ─────────────────────────────────────────────────────────────────────────
+    const deviceId = meta.deviceId || state.socketToDevice.get(socketId);
+    console.log(`[TCP] ⚖️  Weight event from ${deviceId || "unknown"}`);
+    console.log(`[TCP]    Raw: ${trimmedMessage.substring(0, 150)}${trimmedMessage.length > 150 ? "..." : ""}`);
+    
+    // Update device last event time
+    if (deviceId && state.devices.has(deviceId)) {
+      const device = state.devices.get(deviceId)!;
+      device.lastEventAt = new Date();
+    }
+    
+    // TODO: Parse event data (DP-401 format) - Issue #2
+    // TODO: Check for active session in cache - Issue #5
+    // TODO: If offline mode, create/add to offline batch - Issue #7
+    // TODO: Store event locally - Issue #6
+    // TODO: Stream to Cloud via WebSocket (if connected) - Issue #8
+    
+    // Send acknowledgment
+    if (tcpServer) {
+      tcpServer.send(socketId, "OK\n");
+    }
+  }
+}
+
+/**
+ * Handle TCP socket disconnection
+ */
+function handleTCPDisconnect(socketId: string, meta: SocketMeta, reason: string): void {
+  const deviceId = meta.deviceId || state.socketToDevice.get(socketId);
+  
+  console.log(`[TCP] Connection closed: ${deviceId || socketId} - ${reason}`);
+  
+  // Clean up socket → device mapping
+  state.socketToDevice.delete(socketId);
+  
+  // Update device status
+  if (deviceId && state.devices.has(deviceId)) {
+    const device = state.devices.get(deviceId)!;
+    device.tcpConnected = false;
+    device.status = "disconnected";
+    
+    // TODO: Notify Cloud via WebSocket (device_disconnected) - Issue #4
+  }
+}
+
+/**
+ * Handle TCP socket error
+ */
+function handleTCPError(socketId: string, meta: SocketMeta | null, error: Error): void {
+  const deviceId = meta?.deviceId || state.socketToDevice.get(socketId);
+  console.error(`[TCP] Error on ${deviceId || socketId}:`, error.message);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // MAIN
 // ═══════════════════════════════════════════════════════════════════════════════
 
 async function main() {
   console.log(BANNER);
   console.log(`[MAIN] Starting CarniTrack Edge Service...`);
-  console.log(`[MAIN] Version: 0.2.0 (Cloud-Centric)`);
+  console.log(`[MAIN] Version: 0.3.0 (Cloud-Centric)`);
   console.log(`[MAIN] Runtime: Bun ${Bun.version}`);
   console.log("");
   
@@ -106,8 +267,8 @@ async function main() {
   // Initialize Database
   // ─────────────────────────────────────────────────────────────────────────────
   console.log("[INIT] Initializing database...");
-  const db = initDatabase();
-  console.log(`[INIT] Database ready at: ${config.database.path}`);
+  initDatabase();
+  console.log(`[INIT] ✓ Database ready at: ${config.database.path}`);
   
   // ─────────────────────────────────────────────────────────────────────────────
   // Load Edge Identity (from database)
@@ -119,8 +280,8 @@ async function main() {
   state.siteName = edgeConfig.site_name || null;
   
   if (state.edgeId) {
-    console.log(`[INIT] Edge ID: ${state.edgeId}`);
-    console.log(`[INIT] Site: ${state.siteName || state.siteId || "Unknown"}`);
+    console.log(`[INIT] ✓ Edge ID: ${state.edgeId}`);
+    console.log(`[INIT] ✓ Site: ${state.siteName || state.siteId || "Unknown"}`);
   } else {
     console.log(`[INIT] ⚠️  Edge not yet registered with Cloud`);
     console.log(`[INIT]    Will register on first Cloud connection`);
@@ -147,131 +308,37 @@ async function main() {
   // ─────────────────────────────────────────────────────────────────────────────
   console.log("[INIT] Starting TCP server for scale connections...");
   
-  const tcpServer = Bun.listen({
-    hostname: config.tcp.host,
-    port: config.tcp.port,
-    socket: {
-      open(socket) {
-        const remoteAddress = socket.remoteAddress;
-        console.log(`[TCP] New connection from ${remoteAddress}`);
-        
-        // Store socket state
-        // @ts-ignore - Bun socket data property
-        socket.data = {
-          deviceId: null,
-          buffer: "",
-          remoteAddress,
-        };
-      },
-      
-      data(socket, data) {
-        // @ts-ignore
-        const socketState = socket.data;
-        const message = data.toString().trim();
-        
-        console.log(`[TCP] Received from ${socketState.remoteAddress}: ${message}`);
-        
-        // Check for registration packet (e.g., "SCALE-01")
-        if (config.heartbeat.registrationPattern.test(message)) {
-          socketState.deviceId = message;
-          console.log(`[TCP] Device registered: ${message}`);
-          
-          // Update runtime state
-          state.devices.set(message, {
-            sourceIp: socketState.remoteAddress,
-            status: "online",
-            tcpConnected: true,
-            lastHeartbeatAt: new Date(),
-            lastEventAt: null,
-            activeCloudSessionId: null,
-          });
-          
-          // TODO: Notify Cloud via WebSocket (device_connected)
-          // TODO: Check for active session in cache
-          
-          return;
-        }
-        
-        // Check for heartbeat
-        if (message === config.heartbeat.heartbeatString) {
-          console.log(`[TCP] Heartbeat from ${socketState.deviceId || socketState.remoteAddress}`);
-          
-          // Update runtime state
-          if (socketState.deviceId && state.devices.has(socketState.deviceId)) {
-            const device = state.devices.get(socketState.deviceId)!;
-            device.lastHeartbeatAt = new Date();
-            device.status = "online";
-          }
-          
-          // TODO: Forward heartbeat to Cloud (for monitoring)
-          
-          return;
-        }
-        
-        // Otherwise it's a weight event
-        console.log(`[TCP] Weight event from ${socketState.deviceId || socketState.remoteAddress}`);
-        
-        // TODO: Parse event data (DP-401 format)
-        // TODO: Check for active session in cache
-        // TODO: If offline mode, create/add to offline batch
-        // TODO: Store event locally
-        // TODO: Stream to Cloud via WebSocket (if connected)
-        
-        // Send acknowledgment
-        socket.write("OK\n");
-      },
-      
-      close(socket) {
-        // @ts-ignore
-        const socketState = socket.data;
-        console.log(`[TCP] Connection closed: ${socketState.deviceId || socketState.remoteAddress}`);
-        
-        // Update runtime state
-        if (socketState.deviceId && state.devices.has(socketState.deviceId)) {
-          const device = state.devices.get(socketState.deviceId)!;
-          device.tcpConnected = false;
-          device.status = "disconnected";
-        }
-        
-        // TODO: Notify Cloud via WebSocket (device_disconnected)
-      },
-      
-      error(socket, error) {
-        // @ts-ignore
-        const socketState = socket.data;
-        console.error(`[TCP] Error on ${socketState?.deviceId || socketState?.remoteAddress}:`, error);
-      },
-    },
+  tcpServer = new TCPServer({
+    onConnection: handleTCPConnection,
+    onData: handleTCPData,
+    onDisconnect: handleTCPDisconnect,
+    onError: handleTCPError,
   });
   
-  console.log(`[TCP] ✓ Server listening on ${config.tcp.host}:${config.tcp.port}`);
+  await tcpServer.start();
+  setGlobalTCPServer(tcpServer);
+  
+  console.log(`[INIT] ✓ TCP Server listening on ${config.tcp.host}:${config.tcp.port}`);
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // TODO: Start Cloud WebSocket Connection
+  // Cloud WebSocket Connection (Placeholder - Issue #4)
   // ─────────────────────────────────────────────────────────────────────────────
   console.log("[INIT] Cloud WebSocket connection...");
-  console.log(`[CLOUD] ⚠️  WebSocket connector not yet implemented`);
+  console.log(`[CLOUD] ⚠️  WebSocket connector not yet implemented (Issue #4)`);
   console.log(`[CLOUD]    Will connect to: ${config.websocket.url}`);
   state.cloudConnection = "disconnected";
   state.offlineMode = true; // Start in offline mode until connected
-  
-  // TODO: Implement CloudConnector class in src/cloud/connector.ts
-  // - Connect to WebSocket
-  // - Handle authentication
-  // - Receive session updates
-  // - Stream events
-  // - Handle reconnection with backoff
 
   // ─────────────────────────────────────────────────────────────────────────────
   // Start HTTP Server (Admin Dashboard & API)
   // ─────────────────────────────────────────────────────────────────────────────
   console.log("[INIT] Starting HTTP server for Admin Dashboard & API...");
   
-  const httpServer = Bun.serve({
+  httpServer = Bun.serve({
     port: config.http.port,
     hostname: config.http.host,
     
-    fetch(req) {
+    fetch(req: Request): Response {
       const url = new URL(req.url);
       const path = url.pathname;
       
@@ -288,6 +355,7 @@ async function main() {
           edgeId: state.edgeId,
           cloudConnection: state.cloudConnection,
           offlineMode: state.offlineMode,
+          tcpConnections: tcpServer?.connectionCount || 0,
         });
       }
       
@@ -303,7 +371,14 @@ async function main() {
     },
   });
   
-  console.log(`[HTTP] ✓ Server listening on http://${config.http.host}:${config.http.port}`);
+  console.log(`[INIT] ✓ HTTP Server listening on http://${config.http.host}:${config.http.port}`);
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Start Heartbeat Monitor
+  // ─────────────────────────────────────────────────────────────────────────────
+  console.log("[INIT] Starting heartbeat monitor...");
+  startHeartbeatMonitor();
+  console.log(`[INIT] ✓ Heartbeat monitor active (checking every ${config.heartbeat.checkIntervalMs / 1000}s)`);
 
   // ─────────────────────────────────────────────────────────────────────────────
   // Startup Complete
@@ -331,24 +406,86 @@ async function main() {
   // ─────────────────────────────────────────────────────────────────────────────
   // Graceful Shutdown
   // ─────────────────────────────────────────────────────────────────────────────
-  process.on("SIGINT", () => {
+  process.on("SIGINT", async () => {
     console.log("\n[MAIN] Received SIGINT, shutting down gracefully...");
-    tcpServer.stop();
-    httpServer.stop();
-    // TODO: Close WebSocket connection
-    closeDatabase();
-    console.log("[MAIN] Goodbye!");
-    process.exit(0);
+    await shutdown();
   });
   
-  process.on("SIGTERM", () => {
+  process.on("SIGTERM", async () => {
     console.log("\n[MAIN] Received SIGTERM, shutting down gracefully...");
-    tcpServer.stop();
-    httpServer.stop();
-    // TODO: Close WebSocket connection
-    closeDatabase();
-    process.exit(0);
+    await shutdown();
   });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// HEARTBEAT MONITOR
+// ═══════════════════════════════════════════════════════════════════════════════
+
+let heartbeatIntervalId: ReturnType<typeof setInterval> | null = null;
+
+function startHeartbeatMonitor(): void {
+  heartbeatIntervalId = setInterval(() => {
+    const now = Date.now();
+    const timeoutThreshold = config.heartbeat.timeoutMs;
+    
+    for (const [deviceId, device] of state.devices) {
+      if (!device.tcpConnected) continue;
+      
+      const lastHB = device.lastHeartbeatAt?.getTime() || 0;
+      const timeSinceHB = now - lastHB;
+      
+      if (timeSinceHB > timeoutThreshold) {
+        // Device missed too many heartbeats
+        if (device.status !== "disconnected") {
+          console.log(`[MONITOR] ⚠️  Device ${deviceId} heartbeat timeout (${Math.round(timeSinceHB / 1000)}s)`);
+          device.status = "disconnected";
+          
+          // Close the socket connection
+          if (tcpServer && device.socketId) {
+            tcpServer.closeSocket(device.socketId, "Heartbeat timeout");
+          }
+        }
+      } else if (timeSinceHB > timeoutThreshold / 2) {
+        // Device is getting stale
+        if (device.status === "online") {
+          console.log(`[MONITOR] Device ${deviceId} heartbeat delayed (${Math.round(timeSinceHB / 1000)}s)`);
+          device.status = "stale";
+        }
+      }
+    }
+  }, config.heartbeat.checkIntervalMs);
+}
+
+function stopHeartbeatMonitor(): void {
+  if (heartbeatIntervalId) {
+    clearInterval(heartbeatIntervalId);
+    heartbeatIntervalId = null;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// GRACEFUL SHUTDOWN
+// ═══════════════════════════════════════════════════════════════════════════════
+
+async function shutdown(): Promise<void> {
+  console.log("[SHUTDOWN] Stopping heartbeat monitor...");
+  stopHeartbeatMonitor();
+  
+  console.log("[SHUTDOWN] Closing TCP server...");
+  if (tcpServer) {
+    await tcpServer.stop();
+  }
+  
+  console.log("[SHUTDOWN] Closing HTTP server...");
+  if (httpServer) {
+    httpServer.stop();
+  }
+  
+  console.log("[SHUTDOWN] Closing database...");
+  closeDatabase();
+  
+  console.log("[SHUTDOWN] Goodbye! 👋");
+  process.exit(0);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -367,14 +504,15 @@ function handleApi(req: Request, path: string): Response {
         devices: Object.fromEntries(
           Array.from(state.devices.entries()).map(([id, d]) => [id, d.status])
         ),
-        activeSessions: 0, // TODO: Count from cache
-        pendingOfflineBatches: 0, // TODO: Count from database
-        pendingEventSync: 0, // TODO: Count from database
+        activeSessions: 0, // TODO: Count from cache - Issue #5
+        pendingOfflineBatches: 0, // TODO: Count from database - Issue #7
+        pendingEventSync: 0, // TODO: Count from database - Issue #8
         cloudConnection: state.cloudConnection,
         offlineMode: state.offlineMode,
         pluUpdateNeeded: false,
         uptime: (Date.now() - state.startedAt.getTime()) / 1000,
-        version: "0.2.0",
+        version: "0.3.0",
+        tcp: tcpServer?.getStats() || null,
       },
     });
   }
@@ -386,31 +524,53 @@ function handleApi(req: Request, path: string): Response {
       data: Array.from(state.devices.entries()).map(([id, device]) => ({
         deviceId: id,
         ...device,
+        lastHeartbeatAt: device.lastHeartbeatAt?.toISOString() || null,
+        lastEventAt: device.lastEventAt?.toISOString() || null,
       })),
     });
   }
   
-  // GET /api/sessions - List cached sessions
+  // GET /api/tcp/connections - List active TCP connections
+  if (path === "/api/tcp/connections" && req.method === "GET") {
+    const connections = tcpServer?.getActiveConnections() || new Map();
+    return Response.json({
+      success: true,
+      data: Array.from(connections.entries()).map(([socketId, meta]) => ({
+        socketId,
+        deviceId: meta.deviceId,
+        remoteAddress: meta.remoteAddress,
+        connectedAt: meta.connectedAt.toISOString(),
+        lastDataAt: meta.lastDataAt?.toISOString() || null,
+      })),
+    });
+  }
+  
+  // GET /api/tcp/stats - TCP server statistics
+  if (path === "/api/tcp/stats" && req.method === "GET") {
+    return Response.json({
+      success: true,
+      data: tcpServer?.getStats() || null,
+    });
+  }
+  
+  // GET /api/sessions - List cached sessions (Placeholder - Issue #5)
   if (path === "/api/sessions" && req.method === "GET") {
-    // TODO: Query active_sessions_cache table
     return Response.json({
       success: true,
       data: [],
     });
   }
   
-  // GET /api/events - List recent events
+  // GET /api/events - List recent events (Placeholder - Issue #6)
   if (path === "/api/events" && req.method === "GET") {
-    // TODO: Query events table with pagination
     return Response.json({
       success: true,
       data: [],
     });
   }
   
-  // GET /api/offline-batches - List offline batches
+  // GET /api/offline-batches - List offline batches (Placeholder - Issue #7)
   if (path === "/api/offline-batches" && req.method === "GET") {
-    // TODO: Query offline_batches table
     return Response.json({
       success: true,
       data: [],
@@ -430,7 +590,6 @@ function handleApi(req: Request, path: string): Response {
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ADMIN DASHBOARD HTML
-// Minimal dashboard for monitoring and debugging
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function getAdminDashboardHtml(): string {
@@ -447,7 +606,6 @@ function getAdminDashboardHtml(): string {
       --bg-primary: #0d1117;
       --bg-secondary: #161b22;
       --bg-card: #21262d;
-      --bg-hover: #30363d;
       --text-primary: #f0f6fc;
       --text-secondary: #8b949e;
       --text-muted: #6e7681;
@@ -458,14 +616,9 @@ function getAdminDashboardHtml(): string {
       --accent-red: #f85149;
       --accent-blue: #58a6ff;
       --border-color: #30363d;
-      --border-muted: #21262d;
     }
     
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
     
     body {
       font-family: 'JetBrains Mono', monospace;
@@ -485,21 +638,10 @@ function getAdminDashboardHtml(): string {
       justify-content: space-between;
     }
     
-    .header-left {
-      display: flex;
-      align-items: center;
-      gap: 1rem;
-    }
+    .header-left { display: flex; align-items: center; gap: 1rem; }
     
-    .logo {
-      font-size: 1.25rem;
-      font-weight: 700;
-      color: var(--accent-green);
-    }
-    
-    .logo span {
-      color: var(--text-primary);
-    }
+    .logo { font-size: 1.25rem; font-weight: 700; color: var(--accent-green); }
+    .logo span { color: var(--text-primary); }
     
     .badge {
       font-size: 0.65rem;
@@ -507,47 +649,18 @@ function getAdminDashboardHtml(): string {
       border-radius: 4px;
       font-weight: 600;
       text-transform: uppercase;
-      letter-spacing: 0.5px;
     }
+    .badge-admin { background: var(--accent-yellow); color: var(--bg-primary); }
+    .badge-offline { background: var(--accent-orange); color: var(--bg-primary); }
+    .badge-online { background: var(--accent-green-muted); color: var(--text-primary); }
     
-    .badge-admin {
-      background: var(--accent-yellow);
-      color: var(--bg-primary);
-    }
+    .header-right { display: flex; align-items: center; gap: 1rem; font-size: 0.75rem; color: var(--text-secondary); }
     
-    .badge-offline {
-      background: var(--accent-orange);
-      color: var(--bg-primary);
-    }
+    .connection-status { display: flex; align-items: center; gap: 0.5rem; }
     
-    .badge-online {
-      background: var(--accent-green-muted);
-      color: var(--text-primary);
-    }
-    
-    .header-right {
-      display: flex;
-      align-items: center;
-      gap: 1rem;
-      font-size: 0.75rem;
-      color: var(--text-secondary);
-    }
-    
-    .connection-status {
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-    }
-    
-    .status-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-    }
-    
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; }
     .status-dot.online { background: var(--accent-green); }
     .status-dot.offline { background: var(--accent-orange); animation: pulse 2s ease-in-out infinite; }
-    .status-dot.disconnected { background: var(--accent-red); }
     
     main {
       flex: 1;
@@ -555,7 +668,7 @@ function getAdminDashboardHtml(): string {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
       gap: 1rem;
-      max-width: 1800px;
+      max-width: 1600px;
       margin: 0 auto;
       width: 100%;
     }
@@ -567,23 +680,16 @@ function getAdminDashboardHtml(): string {
       padding: 1.25rem;
     }
     
-    .card-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      margin-bottom: 1rem;
-    }
-    
     .card-title {
       font-size: 0.7rem;
       text-transform: uppercase;
       letter-spacing: 1px;
       color: var(--text-secondary);
+      margin-bottom: 1rem;
       display: flex;
       align-items: center;
       gap: 0.5rem;
     }
-    
     .card-title::before {
       content: '';
       display: inline-block;
@@ -593,28 +699,11 @@ function getAdminDashboardHtml(): string {
       border-radius: 2px;
     }
     
-    .stat-value {
-      font-size: 2.5rem;
-      font-weight: 700;
-      line-height: 1;
-      color: var(--text-primary);
-    }
-    
+    .stat-value { font-size: 2.5rem; font-weight: 700; line-height: 1; }
     .stat-value.warning { color: var(--accent-yellow); }
-    .stat-value.danger { color: var(--accent-red); }
-    .stat-value.success { color: var(--accent-green); }
+    .stat-label { font-size: 0.75rem; color: var(--text-secondary); margin-top: 0.5rem; }
     
-    .stat-label {
-      font-size: 0.75rem;
-      color: var(--text-secondary);
-      margin-top: 0.5rem;
-    }
-    
-    .device-list {
-      display: flex;
-      flex-direction: column;
-      gap: 0.5rem;
-    }
+    .device-list { display: flex; flex-direction: column; gap: 0.5rem; }
     
     .device-item {
       display: flex;
@@ -623,84 +712,23 @@ function getAdminDashboardHtml(): string {
       padding: 0.75rem;
       background: var(--bg-secondary);
       border-radius: 6px;
-      border: 1px solid var(--border-muted);
     }
     
-    .device-status {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      flex-shrink: 0;
-    }
-    
+    .device-status { width: 8px; height: 8px; border-radius: 50%; }
     .device-status.online { background: var(--accent-green); }
-    .device-status.idle { background: var(--accent-yellow); }
+    .device-status.stale { background: var(--accent-orange); }
     .device-status.disconnected { background: var(--accent-red); }
-    .device-status.unknown { background: var(--text-muted); }
     
-    .device-info {
-      flex: 1;
-      min-width: 0;
-    }
+    .device-info { flex: 1; }
+    .device-name { font-weight: 600; font-size: 0.85rem; }
+    .device-meta { font-size: 0.7rem; color: var(--text-secondary); }
     
-    .device-name {
-      font-weight: 600;
-      font-size: 0.85rem;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
+    .empty-state { text-align: center; padding: 2rem; color: var(--text-secondary); }
+    .empty-icon { font-size: 2rem; margin-bottom: 0.75rem; opacity: 0.5; }
+    .empty-text { font-size: 0.8rem; }
     
-    .device-meta {
-      font-size: 0.7rem;
-      color: var(--text-secondary);
-    }
-    
-    .empty-state {
-      text-align: center;
-      padding: 2rem;
-      color: var(--text-secondary);
-    }
-    
-    .empty-icon {
-      font-size: 2rem;
-      margin-bottom: 0.75rem;
-      opacity: 0.5;
-    }
-    
-    .empty-text {
-      font-size: 0.8rem;
-    }
-    
-    .card-wide {
-      grid-column: span 2;
-    }
-    
-    @media (max-width: 768px) {
-      .card-wide {
-        grid-column: span 1;
-      }
-    }
-    
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 0.75rem;
-    }
-    
-    th, td {
-      padding: 0.5rem;
-      text-align: left;
-      border-bottom: 1px solid var(--border-muted);
-    }
-    
-    th {
-      color: var(--text-secondary);
-      font-weight: 600;
-      text-transform: uppercase;
-      font-size: 0.65rem;
-      letter-spacing: 0.5px;
-    }
+    .card-wide { grid-column: span 2; }
+    @media (max-width: 768px) { .card-wide { grid-column: span 1; } }
     
     footer {
       background: var(--bg-secondary);
@@ -711,156 +739,125 @@ function getAdminDashboardHtml(): string {
       color: var(--text-muted);
     }
     
-    @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.4; }
-    }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
   </style>
 </head>
 <body>
   <header>
     <div class="header-left">
       <div class="logo">CARNI<span>TRACK</span></div>
-      <span class="badge badge-admin">Admin Dashboard</span>
-      <span class="badge badge-offline" id="mode-badge">OFFLINE MODE</span>
+      <span class="badge badge-admin">Admin</span>
+      <span class="badge badge-offline" id="mode-badge">OFFLINE</span>
     </div>
     <div class="header-right">
       <div class="connection-status">
         <span class="status-dot offline" id="cloud-dot"></span>
         <span id="cloud-status">Cloud: Disconnected</span>
       </div>
-      <div id="edge-id">Edge: Not Registered</div>
+      <div id="edge-id">Edge: -</div>
     </div>
   </header>
   
   <main>
     <div class="card">
-      <div class="card-header">
-        <div class="card-title">Connected Scales</div>
-      </div>
+      <div class="card-title">Connected Scales</div>
       <div class="stat-value" id="device-count">0</div>
       <div class="stat-label">devices online</div>
     </div>
     
     <div class="card">
-      <div class="card-header">
-        <div class="card-title">Active Sessions</div>
-      </div>
+      <div class="card-title">Active Sessions</div>
       <div class="stat-value" id="session-count">0</div>
       <div class="stat-label">from cloud cache</div>
     </div>
     
     <div class="card">
-      <div class="card-header">
-        <div class="card-title">Pending Sync</div>
-      </div>
+      <div class="card-title">Pending Sync</div>
       <div class="stat-value warning" id="pending-count">0</div>
       <div class="stat-label">events waiting</div>
     </div>
     
     <div class="card">
-      <div class="card-header">
-        <div class="card-title">Offline Batches</div>
-      </div>
+      <div class="card-title">Offline Batches</div>
       <div class="stat-value" id="batch-count">0</div>
       <div class="stat-label">awaiting reconciliation</div>
     </div>
     
     <div class="card card-wide">
-      <div class="card-header">
-        <div class="card-title">Devices</div>
-      </div>
+      <div class="card-title">Devices</div>
       <div class="device-list" id="device-list">
         <div class="empty-state">
           <div class="empty-icon">📡</div>
           <div class="empty-text">Waiting for scale connections...</div>
-          <div class="empty-text" style="margin-top: 0.5rem; color: var(--text-muted);">
-            tcp://${config.tcp.host}:${config.tcp.port}
-          </div>
         </div>
       </div>
     </div>
     
     <div class="card card-wide">
-      <div class="card-header">
-        <div class="card-title">Recent Events</div>
-      </div>
-      <div id="events-container">
-        <div class="empty-state">
-          <div class="empty-icon">⚖️</div>
-          <div class="empty-text">No events yet</div>
-        </div>
-      </div>
+      <div class="card-title">TCP Stats</div>
+      <div id="tcp-stats" style="font-size: 0.8rem; color: var(--text-secondary);">Loading...</div>
     </div>
   </main>
   
-  <footer>
-    CarniTrack Edge v0.2.0 (Cloud-Centric) • Admin Dashboard • Refresh: 3s
-  </footer>
+  <footer>CarniTrack Edge v0.3.0 • Admin Dashboard • Refresh: 3s</footer>
   
   <script>
-    async function updateDashboard() {
+    async function update() {
       try {
         const res = await fetch('/api/status');
         const { data } = await res.json();
         
-        // Update stats
-        const deviceCount = Object.keys(data.devices).length;
-        document.getElementById('device-count').textContent = deviceCount;
+        const devCount = Object.keys(data.devices).length;
+        document.getElementById('device-count').textContent = devCount;
         document.getElementById('session-count').textContent = data.activeSessions;
         document.getElementById('pending-count').textContent = data.pendingEventSync;
         document.getElementById('batch-count').textContent = data.pendingOfflineBatches;
         
-        // Update cloud status
-        const cloudDot = document.getElementById('cloud-dot');
-        const cloudStatus = document.getElementById('cloud-status');
-        const modeBadge = document.getElementById('mode-badge');
+        const dot = document.getElementById('cloud-dot');
+        const status = document.getElementById('cloud-status');
+        const badge = document.getElementById('mode-badge');
         
         if (data.cloudConnection === 'connected') {
-          cloudDot.className = 'status-dot online';
-          cloudStatus.textContent = 'Cloud: Connected';
-          modeBadge.className = 'badge badge-online';
-          modeBadge.textContent = 'ONLINE';
+          dot.className = 'status-dot online';
+          status.textContent = 'Cloud: Connected';
+          badge.className = 'badge badge-online';
+          badge.textContent = 'ONLINE';
         } else {
-          cloudDot.className = 'status-dot offline';
-          cloudStatus.textContent = 'Cloud: ' + data.cloudConnection;
-          modeBadge.className = 'badge badge-offline';
-          modeBadge.textContent = 'OFFLINE MODE';
+          dot.className = 'status-dot offline';
+          status.textContent = 'Cloud: ' + data.cloudConnection;
+          badge.className = 'badge badge-offline';
+          badge.textContent = 'OFFLINE';
         }
         
-        // Update edge ID
-        const edgeIdEl = document.getElementById('edge-id');
-        edgeIdEl.textContent = data.edgeId 
+        document.getElementById('edge-id').textContent = data.edgeId 
           ? 'Edge: ' + data.edgeId.substring(0, 8) + '...'
           : 'Edge: Not Registered';
         
-        // Update device list
-        const deviceList = document.getElementById('device-list');
-        if (deviceCount === 0) {
-          deviceList.innerHTML = \`
-            <div class="empty-state">
-              <div class="empty-icon">📡</div>
-              <div class="empty-text">Waiting for scale connections...</div>
-            </div>
-          \`;
+        const list = document.getElementById('device-list');
+        if (devCount === 0) {
+          list.innerHTML = '<div class="empty-state"><div class="empty-icon">📡</div><div class="empty-text">Waiting for scale connections...</div></div>';
         } else {
-          deviceList.innerHTML = Object.entries(data.devices).map(([id, status]) => \`
-            <div class="device-item">
-              <div class="device-status \${status}"></div>
-              <div class="device-info">
-                <div class="device-name">\${id}</div>
-                <div class="device-meta">Status: \${status}</div>
-              </div>
-            </div>
-          \`).join('');
+          list.innerHTML = Object.entries(data.devices).map(([id, st]) => 
+            '<div class="device-item"><div class="device-status ' + st + '"></div><div class="device-info"><div class="device-name">' + id + '</div><div class="device-meta">Status: ' + st + '</div></div></div>'
+          ).join('');
         }
-      } catch (e) {
-        console.error('Dashboard update failed:', e);
-      }
+        
+        if (data.tcp) {
+          document.getElementById('tcp-stats').innerHTML = 
+            'Connections: ' + data.tcp.connectionCount + ' | Total: ' + data.tcp.totalConnections + ' | Received: ' + formatBytes(data.tcp.totalBytesReceived);
+        }
+      } catch (e) { console.error('Update failed:', e); }
     }
     
-    updateDashboard();
-    setInterval(updateDashboard, 3000);
+    function formatBytes(b) {
+      if (!b) return '0 B';
+      const k = 1024, s = ['B','KB','MB'];
+      const i = Math.floor(Math.log(b) / Math.log(k));
+      return (b / Math.pow(k, i)).toFixed(1) + ' ' + s[i];
+    }
+    
+    update();
+    setInterval(update, 3000);
   </script>
 </body>
 </html>`;

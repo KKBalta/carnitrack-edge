@@ -23,7 +23,7 @@
       "@/plu/*": ["src/plu/*"],
       "@/api/*": ["src/api/*"]
     },
-    "types": ["bun-types", "better-sqlite3"],
+    "types": ["bun", "node"],
     "noEmit": true,
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
