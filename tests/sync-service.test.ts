@@ -2,7 +2,7 @@
  * Comprehensive tests for Cloud Sync Service
  * 
  * Tests event streaming, backlog sync, retry logic,
- * and WebSocket integration.
+ * and REST client integration.
  */
 
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
@@ -12,7 +12,7 @@ import { initDatabase, closeDatabase, getDatabase } from "../src/storage/databas
 import { initDeviceManager } from "../src/devices/device-manager.ts";
 import { initSessionCacheManager, destroySessionCacheManager } from "../src/sessions/session-cache.ts";
 import { initOfflineBatchManager, destroyOfflineBatchManager } from "../src/cloud/offline-batch-manager.ts";
-import { initWebSocketClient, destroyWebSocketClient, getWebSocketClient } from "../src/cloud/index.ts";
+import { initRestClient, destroyRestClient, getRestClient } from "../src/cloud/index.ts";
 import type { WeighingEvent } from "../src/types/index.ts";
 import type { WeighingEventData } from "../src/devices/scale-parser.ts";
 
@@ -22,7 +22,7 @@ describe("Cloud Sync Service", () => {
     initDeviceManager();
     initSessionCacheManager();
     initOfflineBatchManager();
-    initWebSocketClient({ autoConnect: false });
+    initRestClient({ autoStart: false, queueWhenOffline: true });
     initEventProcessor();
     initCloudSyncService();
     
@@ -45,7 +45,7 @@ describe("Cloud Sync Service", () => {
     destroyEventProcessor();
     destroyOfflineBatchManager();
     destroySessionCacheManager();
-    destroyWebSocketClient();
+    destroyRestClient();
     // DeviceManager doesn't have a destroy function
     closeDatabase();
   });
@@ -116,16 +116,16 @@ describe("Cloud Sync Service", () => {
   });
 
   describe("streamEvent", () => {
-    it("should stream event when Cloud is connected", async () => {
+    it("should stream event when Cloud is online", async () => {
       const service = getCloudSyncService();
-      const wsClient = getWebSocketClient();
+      const restClient = getRestClient();
       
-      // Mock WebSocket client
-      const mockSend = mock(() => true);
-      const originalSend = wsClient.send.bind(wsClient);
-      wsClient.send = mockSend as any;
-      const originalGetStatus = wsClient.getStatus.bind(wsClient);
-      wsClient.getStatus = mock(() => "connected") as any;
+      // Mock REST client
+      const mockPostEvent = mock(async () => ({ cloudEventId: "cloud-123", status: "accepted" as const }));
+      const originalPostEvent = restClient!.postEvent.bind(restClient);
+      restClient!.postEvent = mockPostEvent as any;
+      const originalIsOnline = restClient!.isOnline.bind(restClient);
+      restClient!.isOnline = mock(() => true) as any;
       
       service.start();
       
@@ -153,17 +153,17 @@ describe("Cloud Sync Service", () => {
       await Bun.sleep(100);
       
       // Restore original methods
-      wsClient.send = originalSend;
-      wsClient.getStatus = originalGetStatus;
+      restClient!.postEvent = originalPostEvent;
+      restClient!.isOnline = originalIsOnline;
     });
 
     it("should handle offline events without streaming", async () => {
       const service = getCloudSyncService();
-      const wsClient = getWebSocketClient();
+      const restClient = getRestClient();
       
-      // Mock WebSocket as disconnected
-      const originalGetStatus = wsClient.getStatus.bind(wsClient);
-      wsClient.getStatus = mock(() => "disconnected") as any;
+      // Mock REST client as offline
+      const originalIsOnline = restClient!.isOnline.bind(restClient);
+      restClient!.isOnline = mock(() => false) as any;
       
       service.start();
       
@@ -191,20 +191,20 @@ describe("Cloud Sync Service", () => {
       expect(event.offlineBatchId).not.toBeNull();
       
       // Restore original method
-      wsClient.getStatus = originalGetStatus;
+      restClient!.isOnline = originalIsOnline;
     });
   });
 
   describe("syncPendingEvents", () => {
-    it("should sync pending events when Cloud is connected", async () => {
+    it("should sync pending events when Cloud is online", async () => {
       const service = getCloudSyncService();
-      const wsClient = getWebSocketClient();
+      const restClient = getRestClient();
       
-      // Mock WebSocket client
-      const originalGetStatus = wsClient.getStatus.bind(wsClient);
-      const originalSend = wsClient.send.bind(wsClient);
-      wsClient.getStatus = mock(() => "connected") as any;
-      wsClient.send = mock(() => true) as any;
+      // Mock REST client
+      const originalIsOnline = restClient!.isOnline.bind(restClient);
+      const originalPostEvent = restClient!.postEvent.bind(restClient);
+      restClient!.isOnline = mock(() => true) as any;
+      restClient!.postEvent = mock(async () => ({ cloudEventId: "cloud-123", status: "accepted" as const })) as any;
       
       service.start();
       
@@ -254,26 +254,26 @@ describe("Cloud Sync Service", () => {
       expect(result.synced).toBeGreaterThanOrEqual(0);
       
       // Restore original methods
-      wsClient.getStatus = originalGetStatus;
-      wsClient.send = originalSend;
+      restClient!.isOnline = originalIsOnline;
+      restClient!.postEvent = originalPostEvent;
     });
 
-    it("should return error when Cloud is not connected", async () => {
+    it("should return error when Cloud is not online", async () => {
       const service = getCloudSyncService();
-      const wsClient = getWebSocketClient();
+      const restClient = getRestClient();
       
-      const originalGetStatus = wsClient.getStatus.bind(wsClient);
-      wsClient.getStatus = mock(() => "disconnected") as any;
+      const originalIsOnline = restClient!.isOnline.bind(restClient);
+      restClient!.isOnline = mock(() => false) as any;
       
       service.start();
       
       const result = await service.syncPendingEvents();
       
       expect(result.success).toBe(false);
-      expect(result.errors).toContain("Cloud not connected");
+      expect(result.errors).toContain("Cloud not online");
       
       // Restore original method
-      wsClient.getStatus = originalGetStatus;
+      restClient!.isOnline = originalIsOnline;
     });
   });
 

@@ -38,10 +38,9 @@ describe("Scale Parser", () => {
     });
 
     it("should parse weighing event CSV", () => {
-      // CSV format: PLU,TIME,DATE,PRODUCT,BARCODE,CODE,OPERATOR,VAL1,WEIGHT,VAL2,FLAGS...,COMPANY
-      // Add flags and company fields to match expected format
-      // Weight is at index 8: 0000002500 = 2500 grams
-      const csvLine = "00001,10:30:00,30.01.2026,KIYMA           ,2000001025004,000,MEHMET        ,0000025000,0000002500,0000037500,0,0,0,1,N,TEST COMPANY";
+      // CSV format: PLU,TIME,DATE,PRODUCT,BARCODE,CODE,OPERATOR,VAL1(weight),DISPLAY,VAL2,FLAGS...,COMPANY
+      // Weight is read from VAL1 field (index 7): 0000002500 = 2500 grams
+      const csvLine = "00001,10:30:00,30.01.2026,KIYMA           ,2000001025004,000,MEHMET        ,0000002500,0000000000,0000037500,0,0,0,1,N,TEST COMPANY";
       const result = parser.parse("socket-123", Buffer.from(csvLine + "\n"));
       
       expect(result.packets.length).toBe(1);

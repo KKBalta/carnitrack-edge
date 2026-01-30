@@ -17,7 +17,7 @@
  */
 
 import { config } from "./config.ts";
-import { initDatabase, closeDatabase, getAllEdgeConfig } from "./storage/database.ts";
+import { initDatabase, closeDatabase, getAllEdgeConfig, setEdgeConfig } from "./storage/database.ts";
 import { TCPServer, setGlobalTCPServer } from "./devices/tcp-server.ts";
 import type { SocketMeta } from "./devices/tcp-server.ts";
 import { ScaleParser, getAckResponse } from "./devices/scale-parser.ts";
@@ -26,9 +26,9 @@ import { initDeviceManager, getDeviceManager } from "./devices/device-manager.ts
 import { initEventProcessor, getEventProcessor, destroyEventProcessor } from "./devices/event-processor.ts";
 import { initSessionCacheManager, getSessionCacheManager, destroySessionCacheManager } from "./sessions/index.ts";
 import { 
-  initWebSocketClient, 
-  getWebSocketClient, 
-  destroyWebSocketClient,
+  initRestClient, 
+  getRestClient, 
+  destroyRestClient,
   initOfflineBatchManager,
   getOfflineBatchManager,
   destroyOfflineBatchManager,
@@ -158,17 +158,19 @@ function handleParsedPacket(socketId: string, packet: ParsedPacket, meta: Socket
       console.log(`[TCP] ✓ Device registered: ${deviceId} (scale #${scaleNumber}) from ${meta.remoteAddress}`);
       console.log(`[TCP]    Global ID: ${device.globalDeviceId}`);
       
-      // Notify Cloud via WebSocket (device_connected)
-      const wsClient = getWebSocketClient();
-      if (wsClient) {
-        wsClient.send({
-          type: "device_connected",
-          payload: {
-            deviceId: device.deviceId,
-            globalDeviceId: device.globalDeviceId || device.deviceId,
-            sourceIp: meta.remoteAddress,
-            deviceType: device.deviceType,
-          },
+      // Notify Cloud via REST API (device_connected)
+      const restClient = getRestClient();
+      if (restClient && restClient.isOnline()) {
+        restClient.postDeviceStatus({
+          deviceId: device.deviceId,
+          status: device.status,
+          heartbeatCount: device.heartbeatCount,
+          eventCount: device.eventCount,
+          globalDeviceId: device.globalDeviceId || device.deviceId,
+          sourceIp: meta.remoteAddress,
+          deviceType: device.deviceType,
+        }).catch(error => {
+          console.error("[TCP] Failed to post device status:", error);
         });
       }
       
@@ -191,17 +193,17 @@ function handleParsedPacket(socketId: string, packet: ParsedPacket, meta: Socket
         console.log(`[TCP] ♥ Heartbeat from ${device.deviceId}`);
         
         // Forward heartbeat to Cloud (for monitoring dashboard)
-        const wsClient = getWebSocketClient();
-        if (wsClient && wsClient.isConnected()) {
-          wsClient.send({
-            type: "device_heartbeat",
-            payload: {
-              deviceId: device.deviceId,
-              globalDeviceId: device.globalDeviceId || device.deviceId,
-              status: device.status,
-              heartbeatCount: device.heartbeatCount,
-              timestamp: new Date().toISOString(),
-            },
+        const restClient = getRestClient();
+        if (restClient && restClient.isOnline()) {
+          restClient.postDeviceStatus({
+            deviceId: device.deviceId,
+            status: device.status,
+            heartbeatCount: device.heartbeatCount,
+            eventCount: device.eventCount,
+            globalDeviceId: device.globalDeviceId || device.deviceId,
+            timestamp: new Date().toISOString(),
+          }).catch(error => {
+            console.error("[TCP] Failed to post device heartbeat:", error);
           });
         }
       } else {
@@ -239,12 +241,23 @@ function handleParsedPacket(socketId: string, packet: ParsedPacket, meta: Socket
       
       // Process weighing event through Event Processor
       // This handles session tagging, offline batch management, and local storage
+      // Deduplication prevents processing the same event twice (scale sends once for weight, once for print)
       const eventProcessor = getEventProcessor();
       const processedEvent = eventProcessor.processWeighingEvent(
         eventData,
         deviceId,
         meta.remoteAddress
       );
+      
+      // Check if event was skipped due to deduplication
+      if (!processedEvent) {
+        console.log(`[TCP]    ⚠️  Event skipped (duplicate detected)`);
+        // Still send acknowledgment to scale
+        if (tcpServer) {
+          tcpServer.send(socketId, getAckResponse());
+        }
+        break;
+      }
       
       console.log(`[TCP]    Event stored: ${processedEvent.id}`);
       if (processedEvent.cloudSessionId) {
@@ -293,16 +306,18 @@ function handleTCPDisconnect(socketId: string, meta: SocketMeta, reason: string)
   // Disconnect device via DeviceManager
   deviceManager.disconnectDevice(socketId, reason);
   
-  // Notify Cloud via WebSocket (device_disconnected)
-  const wsClient = getWebSocketClient();
-  if (wsClient) {
-    wsClient.send({
-      type: "device_disconnected",
-      payload: {
-        deviceId: deviceId,
-        reason: reason,
-        timestamp: new Date().toISOString(),
-      },
+  // Notify Cloud via REST API (device_disconnected)
+  const restClient = getRestClient();
+  if (restClient && restClient.isOnline()) {
+    restClient.postDeviceStatus({
+      deviceId: deviceId,
+      status: "disconnected",
+      heartbeatCount: 0,
+      eventCount: 0,
+      reason: reason,
+      timestamp: new Date().toISOString(),
+    }).catch(error => {
+      console.error("[TCP] Failed to post device disconnect:", error);
     });
   }
 }
@@ -315,6 +330,61 @@ function handleTCPError(socketId: string, meta: SocketMeta | null, error: Error)
   const device = deviceManager.getDeviceBySocketId(socketId);
   const deviceId = device?.deviceId || meta?.deviceId || socketId;
   console.error(`[TCP] Error on ${deviceId}:`, error.message);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// EDGE REGISTRATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Perform Edge registration with Cloud
+ */
+async function performEdgeRegistration(restClient: ReturnType<typeof getRestClient>): Promise<void> {
+  if (!restClient) {
+    throw new Error("REST client not available");
+  }
+
+  console.log("[REGISTRATION] Registering Edge with Cloud...");
+  
+  try {
+    const registrationData = {
+      edgeId: state.edgeId || null,
+      siteId: config.edge.siteId || state.siteId || null,
+      siteName: config.edge.siteId ? `Site ${config.edge.siteId}` : state.siteName || null,
+      version: "0.3.0",
+      capabilities: ["rest", "tcp"],
+    };
+
+    const response = await restClient.register(registrationData);
+    
+    // Store Edge identity in database
+    setEdgeConfig("edge_id", response.edgeId);
+    setEdgeConfig("site_id", response.siteId);
+    setEdgeConfig("site_name", response.siteName);
+    setEdgeConfig("registered_at", new Date().toISOString());
+    
+    // Update runtime state
+    state.edgeId = response.edgeId;
+    state.siteId = response.siteId;
+    state.siteName = response.siteName;
+    
+    // Update REST client identity
+    restClient.setEdgeIdentity({
+      edgeId: response.edgeId,
+      siteId: response.siteId,
+      siteName: response.siteName,
+      registeredAt: new Date(),
+    });
+    
+    console.log(`[REGISTRATION] ✓ Edge registered successfully:`);
+    console.log(`[REGISTRATION]   Edge ID: ${response.edgeId}`);
+    console.log(`[REGISTRATION]   Site ID: ${response.siteId}`);
+    console.log(`[REGISTRATION]   Site Name: ${response.siteName}`);
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error(`[REGISTRATION] ✗ Registration failed: ${errorMessage}`);
+    throw error;
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -400,7 +470,7 @@ async function main() {
   console.log("├─────────────────────────────────────────────────────────────────┤");
   console.log(`│  TCP Server:     ${config.tcp.host}:${config.tcp.port.toString().padEnd(37)}│`);
   console.log(`│  HTTP Server:    ${config.http.host}:${config.http.port.toString().padEnd(37)}│`);
-  console.log(`│  WebSocket:      ${config.websocket.url.substring(0, 43).padEnd(43)}│`);
+  console.log(`│  REST API:       ${config.rest.apiUrl.substring(0, 43).padEnd(43)}│`);
   console.log(`│  Database:       ${config.database.path.substring(0, 43).padEnd(43)}│`);
   console.log(`│  Log Level:      ${config.logging.level.padEnd(45)}│`);
   console.log(`│  Work Hours:     ${config.workHours.start} - ${config.workHours.end} (${config.workHours.timezone})`.padEnd(66) + "│");
@@ -425,29 +495,39 @@ async function main() {
   console.log(`[INIT] ✓ TCP Server listening on ${config.tcp.host}:${config.tcp.port}`);
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // Cloud WebSocket Connection
+  // Cloud REST Client Connection
   // ─────────────────────────────────────────────────────────────────────────────
-  console.log("[INIT] Initializing Cloud WebSocket connection...");
+  console.log("[INIT] Initializing Cloud REST client...");
   
-  const wsClient = initWebSocketClient({
-    url: config.websocket.url,
+  const restClient = initRestClient({
+    apiUrl: config.rest.apiUrl,
     edgeIdentity: state.edgeId ? {
       edgeId: state.edgeId,
       siteId: state.siteId || "",
       siteName: state.siteName || "",
       registeredAt: new Date(),
     } : null,
-    autoConnect: false, // We'll connect after setup
-    queueWhenDisconnected: true,
+    autoStart: true,
+    queueWhenOffline: true,
   });
   
-  // Set up WebSocket event handlers
+  // Set up REST client event handlers
   const offlineBatchManager = getOfflineBatchManager();
   
-  wsClient.on("connected", () => {
+  restClient.on("connected", async () => {
     console.log("[CLOUD] ✓ Connected to Cloud");
     state.cloudConnection = "connected";
     state.offlineMode = false;
+    
+    // Register Edge if not already registered
+    if (!state.edgeId) {
+      console.log("[CLOUD] Edge not registered, attempting registration...");
+      try {
+        await performEdgeRegistration(restClient);
+      } catch (error) {
+        console.error("[CLOUD] Registration failed:", error);
+      }
+    }
     
     // End any active offline batches when Cloud reconnects
     const activeBatches = offlineBatchManager.getActiveBatches();
@@ -457,8 +537,8 @@ async function main() {
     }
   });
   
-  wsClient.on("disconnected", (data: { reason?: string; code?: number }) => {
-    console.log(`[CLOUD] Disconnected from Cloud: ${data.reason || "unknown"}`);
+  restClient.on("disconnected", () => {
+    console.log(`[CLOUD] Disconnected from Cloud`);
     state.cloudConnection = "disconnected";
     state.offlineMode = true;
     
@@ -482,84 +562,29 @@ async function main() {
     }
   });
   
-  wsClient.on("reconnecting", (data: { attempt: number; delay: number }) => {
-    console.log(`[CLOUD] Reconnecting... (attempt #${data.attempt}, next in ${data.delay / 1000}s)`);
-    state.cloudConnection = "reconnecting";
-  });
-  
-  wsClient.on("error", (data: { error: string }) => {
+  restClient.on("error", (data: { error: string }) => {
     console.error(`[CLOUD] Error: ${data.error}`);
     state.cloudConnection = "error";
   });
   
-  wsClient.on("state_change", (data: { previousStatus: string; currentStatus: CloudConnectionState }) => {
+  restClient.on("state_change", (data: { previousStatus: string; currentStatus: CloudConnectionState }) => {
     state.cloudConnection = data.currentStatus;
   });
   
-  // Handle incoming messages from Cloud
+  // Set up session polling
   const sessionCache = getSessionCacheManager();
+  sessionCache.setRestClient(restClient);
+  sessionCache.setDeviceManager(deviceManager);
+  sessionCache.startPolling();
+  console.log(`[INIT] ✓ Session polling started (every ${config.rest.sessionPollIntervalMs / 1000}s)`);
   
-  wsClient.onMessage("session_started", (payload: any) => {
-    console.log(`[CLOUD] ← Session started: ${JSON.stringify(payload)}`);
-    // Cache session locally
-    sessionCache.handleSessionStart({
-      cloudSessionId: payload.cloudSessionId || payload.sessionId,
-      deviceId: payload.deviceId,
-      animalId: payload.animalId ?? null,
-      animalTag: payload.animalTag ?? null,
-      animalSpecies: payload.animalSpecies ?? null,
-      operatorId: payload.operatorId ?? null,
-      status: payload.status || "active",
-      cachedAt: new Date(),
-      lastUpdatedAt: null,
-      expiresAt: new Date(),
-    });
-  });
-  
-  wsClient.onMessage("session_ended", (payload: any) => {
-    console.log(`[CLOUD] ← Session ended: ${JSON.stringify(payload)}`);
-    // Remove from session cache
-    const sessionId = payload.cloudSessionId || payload.sessionId;
-    if (sessionId) {
-      sessionCache.handleSessionEnd(sessionId, payload.reason || "ended");
-    }
-  });
-  
-  wsClient.onMessage("session_paused", (payload: any) => {
-    console.log(`[CLOUD] ← Session paused: ${JSON.stringify(payload)}`);
-    // Update session status in cache
-    const sessionId = payload.cloudSessionId || payload.sessionId;
-    if (sessionId) {
-      sessionCache.handleSessionUpdate(sessionId, { status: "paused" });
-    }
-  });
-  
-  wsClient.onMessage("session_resumed", (payload: any) => {
-    console.log(`[CLOUD] ← Session resumed: ${JSON.stringify(payload)}`);
-    // Update session status in cache
-    const sessionId = payload.cloudSessionId || payload.sessionId;
-    if (sessionId) {
-      sessionCache.handleSessionUpdate(sessionId, { status: "active" });
-    }
-  });
-  
-  wsClient.onMessage("plu_updated", (payload) => {
-    console.log(`[CLOUD] ← PLU updated: ${JSON.stringify(payload)}`);
-    // TODO: Update local PLU cache
-  });
-  
-  wsClient.onMessage("config_update", (payload) => {
-    console.log(`[CLOUD] ← Config update: ${JSON.stringify(payload)}`);
-    // TODO: Apply configuration changes
-  });
-  
-  // Start connection attempt
-  console.log(`[CLOUD] Connecting to: ${config.websocket.url}`);
-  wsClient.connect();
+  // Start connection check
+  console.log(`[CLOUD] REST API URL: ${config.rest.apiUrl}`);
+  restClient.start();
   
   // Start in offline mode until connected
-  state.cloudConnection = wsClient.getStatus();
-  state.offlineMode = !wsClient.isConnected();
+  state.cloudConnection = restClient.getStatus();
+  state.offlineMode = !restClient.isOnline();
   
   // ─────────────────────────────────────────────────────────────────────────────
   // Initialize Cloud Sync Service
@@ -721,8 +746,12 @@ async function shutdown(): Promise<void> {
   console.log("[SHUTDOWN] Destroying Offline Batch Manager...");
   destroyOfflineBatchManager();
   
-  console.log("[SHUTDOWN] Closing WebSocket connection...");
-  destroyWebSocketClient();
+  console.log("[SHUTDOWN] Stopping session polling...");
+  const sessionCache = getSessionCacheManager();
+  sessionCache.stopPolling();
+  
+  console.log("[SHUTDOWN] Closing REST client...");
+  destroyRestClient();
   
   console.log("[SHUTDOWN] Closing TCP server...");
   if (tcpServer) {
@@ -750,8 +779,8 @@ async function handleApi(req: Request, path: string): Promise<Response> {
   
   // GET /api/status - System status
   if (path === "/api/status" && req.method === "GET") {
-    const wsClient = getWebSocketClient();
-    const wsState = wsClient?.getState();
+    const restClient = getRestClient();
+    const restState = restClient?.getState();
     
     return Response.json({
       success: true,
@@ -769,22 +798,36 @@ async function handleApi(req: Request, path: string): Promise<Response> {
         uptime: (Date.now() - state.startedAt.getTime()) / 1000,
         version: "0.3.0",
         tcp: tcpServer?.getStats() || null,
-        websocket: wsState ? {
-          status: wsState.status,
-          lastConnected: wsState.lastConnected?.toISOString() || null,
-          lastError: wsState.lastError,
-          reconnectAttempts: wsState.reconnectAttempts,
-          queuedMessages: wsClient?.getQueueSize() || 0,
+        rest: restState ? {
+          status: restState.status,
+          lastConnected: restState.lastConnected?.toISOString() || null,
+          lastError: restState.lastError,
+          consecutiveFailures: restState.consecutiveFailures,
+          queuedRequests: restClient?.getQueueSize() || 0,
+          isOnline: restClient?.isOnline() || false,
         } : null,
       },
     });
   }
   
-  // GET /api/devices - List devices
+  // GET /api/devices - List devices (with optional status filter)
   if (path === "/api/devices" && req.method === "GET") {
+    const url = new URL(req.url);
+    const statusFilter = url.searchParams.get("status"); // e.g., "online", "idle", "disconnected"
+    const onlineOnly = url.searchParams.get("online") === "true"; // Filter for online devices only
+    
+    let devices = deviceManager.getAllDevices();
+    
+    // Apply filters
+    if (onlineOnly) {
+      devices = devices.filter(d => d.tcpConnected && (d.status === "online" || d.status === "idle"));
+    } else if (statusFilter) {
+      devices = devices.filter(d => d.status === statusFilter);
+    }
+    
     return Response.json({
       success: true,
-      data: deviceManager.getAllDevices().map(device => ({
+      data: devices.map(device => ({
         deviceId: device.deviceId,
         globalDeviceId: device.globalDeviceId,
         displayName: device.displayName,
@@ -801,6 +844,42 @@ async function handleApi(req: Request, path: string): Promise<Response> {
         connectedAt: device.connectedAt?.toISOString() || null,
       })),
     });
+  }
+  
+  // POST /api/register - Manually trigger Edge registration
+  if (path === "/api/register" && req.method === "POST") {
+    const restClient = getRestClient();
+    if (!restClient) {
+      return Response.json({
+        success: false,
+        error: "REST client not initialized",
+      }, { status: 500 });
+    }
+    
+    if (!restClient.isOnline()) {
+      return Response.json({
+        success: false,
+        error: "Cloud not connected. Cannot register while offline.",
+      }, { status: 503 });
+    }
+    
+    try {
+      await performEdgeRegistration(restClient);
+      return Response.json({
+        success: true,
+        data: {
+          edgeId: state.edgeId,
+          siteId: state.siteId,
+          siteName: state.siteName,
+        },
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return Response.json({
+        success: false,
+        error: errorMessage,
+      }, { status: 500 });
+    }
   }
   
   // PUT /api/devices/:deviceId - Update device config (rename, location, etc.)

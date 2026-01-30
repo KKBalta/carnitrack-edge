@@ -12,6 +12,8 @@ import { getDatabase } from "../storage/database.ts";
 import { toSqliteDate, fromSqliteDate } from "../storage/database.ts";
 import { config } from "../config.ts";
 import type { SessionCache, SessionStatus } from "../types/index.ts";
+import type { RestClient } from "../cloud/rest-client.ts";
+import type { DeviceManager } from "../devices/device-manager.ts";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -34,10 +36,138 @@ type EventCallback = (session: SessionCache) => void;
 export class SessionCacheManager {
   private eventListeners: Map<SessionCacheEvent, Set<EventCallback>> = new Map();
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
+  private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private restClient: RestClient | null = null;
+  private deviceManager: DeviceManager | null = null;
 
   constructor() {
     // Start periodic cleanup of expired sessions
     this.startCleanupTimer();
+  }
+
+  /**
+   * Set REST client for polling (called from main initialization)
+   */
+  setRestClient(client: RestClient | null): void {
+    this.restClient = client;
+  }
+
+  /**
+   * Set device manager for getting device IDs (called from main initialization)
+   */
+  setDeviceManager(manager: DeviceManager | null): void {
+    this.deviceManager = manager;
+  }
+
+  /**
+   * Start polling for active sessions from Cloud
+   */
+  startPolling(): void {
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+    }
+
+    this.pollTimer = setInterval(() => {
+      this.pollSessions().catch(error => {
+        console.error("[SessionCache] Poll error:", error);
+      });
+    }, config.rest.sessionPollIntervalMs);
+
+    // Poll immediately
+    this.pollSessions().catch(error => {
+      console.error("[SessionCache] Initial poll error:", error);
+    });
+  }
+
+  /**
+   * Stop polling
+   */
+  stopPolling(): void {
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
+    }
+  }
+
+  /**
+   * Poll Cloud for active sessions and update cache
+   */
+  private async pollSessions(): Promise<void> {
+    if (!this.restClient || !this.deviceManager) {
+      return;
+    }
+
+    // Get all active device IDs
+    const devices = this.deviceManager.getActiveDevices();
+    const deviceIds = devices.map(d => d.deviceId);
+
+    if (deviceIds.length === 0) {
+      return;
+    }
+
+    try {
+      const response = await this.restClient.getSessions(deviceIds);
+      const cloudSessions = response.sessions || [];
+
+      // Get current cached sessions
+      const cachedSessions = this.getAllActiveSessions();
+      const cachedSessionMap = new Map(
+        cachedSessions.map(s => [s.cloudSessionId, s])
+      );
+
+      // Process sessions from Cloud
+      const cloudSessionIds = new Set<string>();
+      for (const cloudSession of cloudSessions) {
+        cloudSessionIds.add(cloudSession.cloudSessionId);
+
+        const cached = cachedSessionMap.get(cloudSession.cloudSessionId);
+        
+        if (!cached) {
+          // New session - cache it
+          this.handleSessionStart({
+            cloudSessionId: cloudSession.cloudSessionId,
+            deviceId: cloudSession.deviceId,
+            animalId: cloudSession.animalId ?? null,
+            animalTag: cloudSession.animalTag ?? null,
+            animalSpecies: cloudSession.animalSpecies ?? null,
+            operatorId: cloudSession.operatorId ?? null,
+            status: cloudSession.status,
+            cachedAt: new Date(),
+            lastUpdatedAt: null,
+            expiresAt: new Date(),
+          });
+        } else {
+          // Existing session - check for updates
+          const needsUpdate = 
+            cached.deviceId !== cloudSession.deviceId ||
+            cached.animalId !== (cloudSession.animalId ?? null) ||
+            cached.animalTag !== (cloudSession.animalTag ?? null) ||
+            cached.animalSpecies !== (cloudSession.animalSpecies ?? null) ||
+            cached.operatorId !== (cloudSession.operatorId ?? null) ||
+            cached.status !== cloudSession.status;
+
+          if (needsUpdate) {
+            this.handleSessionUpdate(cloudSession.cloudSessionId, {
+              deviceId: cloudSession.deviceId,
+              animalId: cloudSession.animalId ?? null,
+              animalTag: cloudSession.animalTag ?? null,
+              animalSpecies: cloudSession.animalSpecies ?? null,
+              operatorId: cloudSession.operatorId ?? null,
+              status: cloudSession.status,
+            });
+          }
+        }
+      }
+
+      // Remove sessions that are no longer active in Cloud
+      for (const cached of cachedSessions) {
+        if (!cloudSessionIds.has(cached.cloudSessionId)) {
+          this.handleSessionEnd(cached.cloudSessionId, "ended");
+        }
+      }
+    } catch (error) {
+      console.error("[SessionCache] Failed to poll sessions:", error);
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -164,6 +294,14 @@ export class SessionCacheManager {
     // Get session before deleting
     const session = this.getSessionById(cloudSessionId);
     
+    // First, unlink any events that reference this session
+    // This is necessary because events table has a foreign key constraint
+    db.prepare(`
+      UPDATE events 
+      SET cloud_session_id = NULL 
+      WHERE cloud_session_id = ?
+    `).run(cloudSessionId);
+    
     // Remove from cache
     db.prepare(`
       DELETE FROM active_sessions_cache
@@ -173,6 +311,7 @@ export class SessionCacheManager {
     // Emit event
     if (session) {
       this.emit("session:ended", session);
+      console.log(`[SessionCache] Session ended: ${cloudSessionId} (${reason})`);
     }
   }
 
@@ -376,6 +515,16 @@ export class SessionCacheManager {
       expires_at: string;
     }>;
 
+    // First, unlink any events that reference expired sessions
+    // This is necessary because events table has a foreign key constraint
+    for (const row of expired) {
+      db.prepare(`
+        UPDATE events 
+        SET cloud_session_id = NULL 
+        WHERE cloud_session_id = ?
+      `).run(row.cloud_session_id);
+    }
+
     // Delete expired sessions
     const result = db.prepare(`
       DELETE FROM active_sessions_cache
@@ -432,13 +581,14 @@ export class SessionCacheManager {
   }
 
   /**
-   * Stop cleanup timer (for shutdown)
+   * Stop cleanup timer and polling (for shutdown)
    */
   stop(): void {
     if (this.cleanupTimer) {
       clearInterval(this.cleanupTimer);
       this.cleanupTimer = null;
     }
+    this.stopPolling();
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

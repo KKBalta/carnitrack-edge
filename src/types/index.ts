@@ -384,10 +384,52 @@ export interface CloudConnectionLogEntry {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// WEBSOCKET MESSAGE TYPES (Cloud ↔ Edge)
+// REST API TYPES (Cloud ↔ Edge)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/** Message types from Cloud to Edge */
+/** REST API response for event POST */
+export interface EventPostResponse {
+  cloudEventId: string;
+  status: "accepted" | "duplicate";
+}
+
+/** REST API response for batch POST */
+export interface BatchPostResponse {
+  results: Array<{
+    localEventId: string;
+    cloudEventId: string;
+    status: "accepted" | "duplicate" | "failed";
+    error?: string;
+  }>;
+}
+
+/** REST API response for sessions GET */
+export interface SessionsResponse {
+  sessions: Array<{
+    cloudSessionId: string;
+    deviceId: string;
+    animalId?: string | null;
+    animalTag?: string | null;
+    animalSpecies?: string | null;
+    operatorId?: string | null;
+    status: "active" | "paused";
+  }>;
+}
+
+/** REST API response for registration POST */
+export interface RegistrationResponse {
+  edgeId: string;
+  siteId: string;
+  siteName: string;
+  config: Record<string, unknown>;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// WEBSOCKET MESSAGE TYPES (Cloud ↔ Edge) - DEPRECATED
+// Kept for backward compatibility, but no longer used
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** @deprecated Message types from Cloud to Edge - use REST API instead */
 export type CloudToEdgeMessageType = 
   | "session_started"     // New session started on a device
   | "session_ended"       // Session ended
@@ -400,7 +442,7 @@ export type CloudToEdgeMessageType =
   | "ping"                // Keep-alive ping
   | "pong";               // Keep-alive pong response
 
-/** Message types from Edge to Cloud */
+/** @deprecated Message types from Edge to Cloud - use REST API instead */
 export type EdgeToCloudMessageType = 
   | "register"            // Edge registration/hello
   | "device_connected"    // Scale connected to Edge
@@ -414,7 +456,7 @@ export type EdgeToCloudMessageType =
   | "ping"                // Keep-alive ping (Edge-initiated)
   | "pong";               // Keep-alive pong
 
-/** Base message structure for Cloud ↔ Edge communication */
+/** @deprecated Base message structure for Cloud ↔ Edge communication - use REST API instead */
 export interface CloudMessage<T = unknown> {
   /** Message type */
   type: CloudToEdgeMessageType | EdgeToCloudMessageType;
@@ -432,7 +474,7 @@ export interface CloudMessage<T = unknown> {
   edgeId?: string;
 }
 
-/** Session started message payload */
+/** @deprecated Session started message payload - use SessionsResponse instead */
 export interface SessionStartedPayload {
   cloudSessionId: string;
   deviceId: string;
@@ -442,7 +484,7 @@ export interface SessionStartedPayload {
   operatorId: string;
 }
 
-/** Session ended message payload */
+/** @deprecated Session ended message payload - use SessionsResponse polling instead */
 export interface SessionEndedPayload {
   cloudSessionId: string;
   deviceId: string;
@@ -465,7 +507,7 @@ export interface EventPayload {
   receivedAt: string;
 }
 
-/** Event acknowledgment payload (Cloud → Edge) */
+/** @deprecated Event acknowledgment payload - use EventPostResponse instead */
 export interface EventAckPayload {
   localEventId: string;
   cloudEventId: string;

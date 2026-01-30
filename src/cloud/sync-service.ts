@@ -7,11 +7,10 @@
  */
 
 import { getEventProcessor } from "../devices/event-processor.ts";
-import { getWebSocketClient } from "./websocket-client.ts";
+import { getRestClient } from "./rest-client.ts";
 import { getOfflineBatchManager } from "./offline-batch-manager.ts";
 import { config } from "../config.ts";
-import type { WeighingEvent, EventPayload, EventAckPayload } from "../types/index.ts";
-import type { CloudMessage } from "../types/index.ts";
+import type { WeighingEvent, EventPayload } from "../types/index.ts";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -50,11 +49,11 @@ export class CloudSyncService {
   private lastSyncAt: Date | null = null;
   private syncConfig: SyncConfig;
   private retryTimer: ReturnType<typeof setInterval> | null = null;
-  private backlogSyncTimer: ReturnType<typeof setTimeout> | null = null;
+  private batchTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor() {
     this.syncConfig = {
-      batchSize: config.cloud.batchSize,
+      batchSize: config.rest.batchSize,
       retryInterval: 5000, // 5 seconds
       maxRetries: 10,
       backlogSyncDelay: 2000, // 2 seconds after reconnect
@@ -76,34 +75,32 @@ export class CloudSyncService {
 
     this.isRunning = true;
     const eventProcessor = getEventProcessor();
-    const wsClient = getWebSocketClient();
+    const restClient = getRestClient();
+
+    if (!restClient) {
+      console.error("[SyncService] REST client not initialized");
+      return;
+    }
 
     // Subscribe to event processor events
     eventProcessor.on("event:captured", (event) => {
       this.handleEventCaptured(event);
     });
 
-    // Subscribe to WebSocket connection events
-    wsClient.on("connected", () => {
+    // Subscribe to REST client connection events
+    restClient.on("connected", () => {
       this.handleCloudConnected();
     });
 
-    wsClient.on("disconnected", () => {
+    restClient.on("disconnected", () => {
       this.handleCloudDisconnected();
-    });
-
-    // Subscribe to Cloud messages
-    wsClient.on("message", (message: CloudMessage) => {
-      if (message.type === "event_ack") {
-        this.handleEventAck(message.payload as EventAckPayload);
-      } else if (message.type === "event_rejected") {
-        const payload = message.payload as { localEventId: string; reason: string };
-        this.handleEventRejected(payload.localEventId, payload.reason);
-      }
     });
 
     // Start retry timer for failed events
     this.startRetryTimer();
+
+    // Start batch timer for periodic batch uploads
+    this.startBatchTimer();
 
     console.log("[SyncService] Started");
   }
@@ -118,7 +115,7 @@ export class CloudSyncService {
 
     this.isRunning = false;
     this.stopRetryTimer();
-    this.cancelBacklogSync();
+    this.stopBatchTimer();
 
     console.log("[SyncService] Stopped");
   }
@@ -145,10 +142,10 @@ export class CloudSyncService {
 
   /**
    * Handle new event captured
-   * Stream immediately if Cloud is connected
+   * Post immediately if Cloud is online
    */
   private handleEventCaptured(event: WeighingEvent): void {
-    const wsClient = getWebSocketClient();
+    const restClient = getRestClient();
 
     // If offline mode, event is already tagged with batch ID
     // Just store it, will sync when connection restored
@@ -156,9 +153,11 @@ export class CloudSyncService {
       return;
     }
 
-    // If Cloud is connected, stream immediately
-    if (wsClient.getStatus() === "connected") {
-      this.streamEvent(event);
+    // If Cloud is online, post immediately
+    if (restClient && restClient.isOnline()) {
+      this.postEvent(event).catch(error => {
+        console.error("[SyncService] Failed to post event:", error);
+      });
     }
     // Otherwise, event stays as "pending" and will be synced later
   }
@@ -167,7 +166,7 @@ export class CloudSyncService {
    * Handle Cloud connection established
    */
   private handleCloudConnected(): void {
-    console.log("[SyncService] Cloud connected, scheduling backlog sync...");
+    console.log("[SyncService] Cloud connected, syncing backlog...");
 
     // End any active offline batches
     const offlineBatchManager = getOfflineBatchManager();
@@ -176,8 +175,10 @@ export class CloudSyncService {
       offlineBatchManager.endBatch(batch.id);
     }
 
-    // Schedule backlog sync after a short delay
-    this.scheduleBacklogSync();
+    // Sync pending events immediately
+    this.syncPendingEvents().catch(error => {
+      console.error("[SyncService] Error in backlog sync:", error);
+    });
   }
 
   /**
@@ -185,41 +186,23 @@ export class CloudSyncService {
    */
   private handleCloudDisconnected(): void {
     console.log("[SyncService] Cloud disconnected");
-    this.cancelBacklogSync();
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // POSTING EVENTS
+  // ═══════════════════════════════════════════════════════════════════════════
+
   /**
-   * Handle event acknowledgment from Cloud
+   * Post single event to Cloud
    */
-  private handleEventAck(payload: EventAckPayload): void {
+  async postEvent(event: WeighingEvent): Promise<boolean> {
+    const restClient = getRestClient();
     const eventProcessor = getEventProcessor();
 
-    if (payload.status === "accepted") {
-      eventProcessor.markEventSynced(payload.localEventId, payload.cloudEventId);
-    } else if (payload.status === "duplicate") {
-      // Cloud says it's a duplicate, mark as synced anyway
-      eventProcessor.markEventSynced(payload.localEventId, payload.cloudEventId);
+    if (!restClient) {
+      eventProcessor.markEventFailed(event.id, "REST client not available");
+      return false;
     }
-  }
-
-  /**
-   * Handle event rejection from Cloud
-   */
-  private handleEventRejected(localEventId: string, reason: string): void {
-    const eventProcessor = getEventProcessor();
-    eventProcessor.markEventFailed(localEventId, `Rejected by Cloud: ${reason}`);
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // STREAMING
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  /**
-   * Stream single event to Cloud
-   */
-  async streamEvent(event: WeighingEvent): Promise<boolean> {
-    const wsClient = getWebSocketClient();
-    const eventProcessor = getEventProcessor();
 
     // Update status to "streaming"
     eventProcessor.updateSyncStatus(event.id, "streaming");
@@ -245,34 +228,34 @@ export class CloudSyncService {
       receivedAt: event.receivedAt.toISOString(),
     };
 
-    // Send via WebSocket
-    const sent = wsClient.send({
-      type: "event",
-      payload,
-    });
-
-    if (!sent) {
-      // Failed to send, mark as failed
-      eventProcessor.markEventFailed(event.id, "WebSocket send failed");
+    try {
+      // Post via REST API
+      const response = await restClient.postEvent(payload);
+      
+      // Mark as synced
+      eventProcessor.markEventSynced(event.id, response.cloudEventId);
+      return true;
+    } catch (error) {
+      // Failed to post, mark as failed
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      eventProcessor.markEventFailed(event.id, `REST POST failed: ${errorMessage}`);
       return false;
     }
-
-    return true;
   }
 
   /**
-   * Sync pending events (after reconnection)
+   * Sync pending events (after reconnection or periodically)
    */
   async syncPendingEvents(): Promise<SyncResult> {
     const eventProcessor = getEventProcessor();
-    const wsClient = getWebSocketClient();
+    const restClient = getRestClient();
 
-    if (wsClient.getStatus() !== "connected") {
+    if (!restClient || !restClient.isOnline()) {
       return {
         success: false,
         synced: 0,
         failed: 0,
-        errors: ["Cloud not connected"],
+        errors: ["Cloud not online"],
       };
     }
 
@@ -284,13 +267,17 @@ export class CloudSyncService {
       errors: [],
     };
 
+    if (pendingEvents.length === 0) {
+      return result;
+    }
+
     // Send events in batches
     for (let i = 0; i < pendingEvents.length; i += this.syncConfig.batchSize) {
       const batch = pendingEvents.slice(i, i + this.syncConfig.batchSize);
       
       if (batch.length === 1) {
-        // Single event - use regular stream
-        const success = await this.streamEvent(batch[0]);
+        // Single event - use regular post
+        const success = await this.postEvent(batch[0]);
         if (success) {
           result.synced++;
         } else {
@@ -298,7 +285,7 @@ export class CloudSyncService {
         }
       } else {
         // Multiple events - send as batch
-        const success = await this.streamEventBatch(batch);
+        const success = await this.postEventBatch(batch);
         if (success) {
           result.synced += batch.length;
         } else {
@@ -313,11 +300,18 @@ export class CloudSyncService {
   }
 
   /**
-   * Stream batch of events to Cloud
+   * Post batch of events to Cloud
    */
-  private async streamEventBatch(events: WeighingEvent[]): Promise<boolean> {
-    const wsClient = getWebSocketClient();
+  private async postEventBatch(events: WeighingEvent[]): Promise<boolean> {
+    const restClient = getRestClient();
     const eventProcessor = getEventProcessor();
+
+    if (!restClient) {
+      events.forEach(event => {
+        eventProcessor.markEventFailed(event.id, "REST client not available");
+      });
+      return false;
+    }
 
     // Get device info
     const deviceManager = await import("../devices/device-manager.ts").then(m => m.getDeviceManager());
@@ -348,23 +342,28 @@ export class CloudSyncService {
       eventProcessor.updateSyncStatus(event.id, "streaming");
     });
 
-    // Send batch
-    const sent = wsClient.send({
-      type: "event_batch",
-      payload: {
-        events: payloads,
-      },
-    });
-
-    if (!sent) {
-      // Failed to send batch
+    try {
+      // Post batch via REST API
+      const response = await restClient.postEventBatch(payloads);
+      
+      // Process results
+      for (const result of response.results) {
+        if (result.status === "accepted" || result.status === "duplicate") {
+          eventProcessor.markEventSynced(result.localEventId, result.cloudEventId);
+        } else {
+          eventProcessor.markEventFailed(result.localEventId, result.error || "Batch post failed");
+        }
+      }
+      
+      return true;
+    } catch (error) {
+      // Failed to post batch
+      const errorMessage = error instanceof Error ? error.message : String(error);
       events.forEach(event => {
-        eventProcessor.markEventFailed(event.id, "Batch send failed");
+        eventProcessor.markEventFailed(event.id, `Batch POST failed: ${errorMessage}`);
       });
       return false;
     }
-
-    return true;
   }
 
   /**
@@ -373,14 +372,14 @@ export class CloudSyncService {
   async syncOfflineBatch(batchId: string): Promise<SyncResult> {
     const offlineBatchManager = getOfflineBatchManager();
     const eventProcessor = getEventProcessor();
-    const wsClient = getWebSocketClient();
+    const restClient = getRestClient();
 
-    if (wsClient.getStatus() !== "connected") {
+    if (!restClient || !restClient.isOnline()) {
       return {
         success: false,
         synced: 0,
         failed: 0,
-        errors: ["Cloud not connected"],
+        errors: ["Cloud not online"],
       };
     }
 
@@ -400,18 +399,8 @@ export class CloudSyncService {
     // Get events for this batch
     const events = eventProcessor.getEventsByBatch(batchId);
 
-    // Send batch notification to Cloud
-    wsClient.send({
-      type: "offline_batch_end",
-      payload: {
-        batchId: batch.id,
-        deviceId: batch.deviceId,
-        startedAt: batch.startedAt.toISOString(),
-        endedAt: batch.endedAt?.toISOString() ?? null,
-        eventCount: batch.eventCount,
-        totalWeightGrams: batch.totalWeightGrams,
-      },
-    });
+    // Note: Offline batch notification can be sent via REST if Cloud API supports it
+    // For now, we'll just sync the events
 
     // Sync events
     const result = await this.syncPendingEvents();
@@ -493,25 +482,29 @@ export class CloudSyncService {
   }
 
   /**
-   * Schedule backlog sync after reconnection
+   * Start batch timer for periodic batch uploads
    */
-  private scheduleBacklogSync(): void {
-    this.cancelBacklogSync();
+  private startBatchTimer(): void {
+    if (this.batchTimer) {
+      clearInterval(this.batchTimer);
+    }
 
-    this.backlogSyncTimer = setTimeout(() => {
-      this.syncPendingEvents().catch(error => {
-        console.error("[SyncService] Error in backlog sync:", error);
-      });
-    }, this.syncConfig.backlogSyncDelay);
+    this.batchTimer = setInterval(() => {
+      if (this.isRunning) {
+        this.syncPendingEvents().catch(error => {
+          console.error("[SyncService] Error in batch sync:", error);
+        });
+      }
+    }, config.rest.batchIntervalMs);
   }
 
   /**
-   * Cancel backlog sync
+   * Stop batch timer
    */
-  private cancelBacklogSync(): void {
-    if (this.backlogSyncTimer) {
-      clearTimeout(this.backlogSyncTimer);
-      this.backlogSyncTimer = null;
+  private stopBatchTimer(): void {
+    if (this.batchTimer) {
+      clearInterval(this.batchTimer);
+      this.batchTimer = null;
     }
   }
 }

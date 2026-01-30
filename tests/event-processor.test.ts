@@ -11,7 +11,7 @@ import { initDatabase, closeDatabase, getDatabase, toSqliteDate } from "../src/s
 import { initDeviceManager } from "../src/devices/device-manager.ts";
 import { initSessionCacheManager, destroySessionCacheManager } from "../src/sessions/session-cache.ts";
 import { initOfflineBatchManager, destroyOfflineBatchManager } from "../src/cloud/offline-batch-manager.ts";
-import { initWebSocketClient, destroyWebSocketClient } from "../src/cloud/index.ts";
+import { initRestClient, destroyRestClient, getRestClient } from "../src/cloud/index.ts";
 import type { WeighingEvent, SessionCache } from "../src/types/index.ts";
 import type { WeighingEventData } from "../src/devices/scale-parser.ts";
 
@@ -22,7 +22,7 @@ describe("Event Processor", () => {
     initDeviceManager();
     initSessionCacheManager();
     initOfflineBatchManager();
-    initWebSocketClient({ autoConnect: false });
+    initRestClient({ autoStart: false, queueWhenOffline: true });
     initEventProcessor();
     
     const db = getDatabase();
@@ -44,7 +44,7 @@ describe("Event Processor", () => {
     destroyEventProcessor();
     destroyOfflineBatchManager();
     destroySessionCacheManager();
-    destroyWebSocketClient();
+    destroyRestClient();
     // DeviceManager doesn't have a destroy function
     closeDatabase();
   });
@@ -53,11 +53,11 @@ describe("Event Processor", () => {
     it("should process and store a weighing event", () => {
       const processor = getEventProcessor();
       const db = getDatabase();
-      const wsClient = require("../src/cloud/index.ts").getWebSocketClient();
+      const restClient = getRestClient();
       
-      // Mock WebSocket as connected to prevent offline mode
-      const originalGetStatus = wsClient.getStatus;
-      wsClient.getStatus = mock(() => "connected");
+      // Mock REST client as online to prevent offline mode
+      const originalIsOnline = restClient!.isOnline.bind(restClient);
+      restClient!.isOnline = mock(() => true);
       
       const eventData: WeighingEventData = {
         pluCode: "00001",
@@ -100,17 +100,17 @@ describe("Event Processor", () => {
       expect(stored.weight_grams).toBe(2500);
       
       // Restore original method
-      wsClient.getStatus = originalGetStatus;
+      restClient!.isOnline = originalIsOnline;
     });
 
     it("should tag event with active session when available", () => {
       const processor = getEventProcessor();
       const sessionCache = require("../src/sessions/session-cache.ts").getSessionCacheManager();
-      const wsClient = require("../src/cloud/index.ts").getWebSocketClient();
+      const restClient = getRestClient();
       
-      // Mock WebSocket as connected to prevent offline mode
-      const originalGetStatus = wsClient.getStatus;
-      wsClient.getStatus = mock(() => "connected");
+      // Mock REST client as online to prevent offline mode
+      const originalIsOnline = restClient!.isOnline.bind(restClient);
+      restClient!.isOnline = mock(() => true);
       
       // Create active session
       const session: SessionCache = {
@@ -151,16 +151,16 @@ describe("Event Processor", () => {
       expect(event.offlineMode).toBe(false);
       
       // Restore original method
-      wsClient.getStatus = originalGetStatus;
+      restClient!.isOnline = originalIsOnline;
     });
 
     it("should create offline batch when cloud is disconnected", () => {
       const processor = getEventProcessor();
-      const wsClient = require("../src/cloud/index.ts").getWebSocketClient();
+      const restClient = getRestClient();
       
-      // Mock WebSocket client to return disconnected status
-      const originalGetStatus = wsClient.getStatus;
-      wsClient.getStatus = mock(() => "disconnected");
+      // Mock REST client to return offline status
+      const originalIsOnline = restClient!.isOnline.bind(restClient);
+      restClient!.isOnline = mock(() => false);
 
       const eventData: WeighingEventData = {
         pluCode: "00001",
@@ -186,7 +186,7 @@ describe("Event Processor", () => {
       expect(event.cloudSessionId).toBeNull();
 
       // Restore original method
-      wsClient.getStatus = originalGetStatus;
+      restClient!.isOnline = originalIsOnline;
     });
 
     it("should prevent duplicate events", () => {

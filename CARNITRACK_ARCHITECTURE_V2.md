@@ -1,5 +1,11 @@
 # CarniTrack + DP-401 Scalable Architecture v3.0
 
+> **UPDATE (January 2026)**: The Edge-to-Cloud communication has been pivoted from WebSocket to REST API.
+> - **Edge → Cloud**: HTTP POST for events, device status updates
+> - **Cloud → Edge**: HTTP polling for active sessions (every 5s)
+> - **Advantages**: Simpler architecture, better for satellite/unstable connections, no persistent connection needed
+> - See `src/cloud/rest-client.ts` for implementation
+
 ## ⚡ Architecture Philosophy: Cloud-Centric Design
 
 ```
@@ -13,9 +19,9 @@
 │  ┌─────────────────┐             ┌─────────────────┐           ┌─────────────┐  │
 │  │                 │             │                 │           │             │  │
 │  │ Start Session ──┼─────────────┼─────────────────┼──────────►│ Create      │  │
-│  │ (Phone App)     │   REST      │                 │ WebSocket │ Session     │  │
-│  │                 │             │                 │◄──────────│ Push to     │  │
-│  │ View Events ◄───┼─────────────┼─────────────────┼───────────│ Edge        │  │
+│  │ (Phone App)     │   REST      │                 │   REST    │ Session     │  │
+│  │                 │             │   Poll Sessions │◄──────────│ (Edge       │  │
+│  │ View Events ◄───┼─────────────┼─────────────────┼───────────│ polls)      │  │
 │  │ (Real-time)     │             │                 │           │             │  │
 │  │                 │             │  Capture Events │           │             │  │
 │  │ End Session ────┼─────────────┼─────────────────┼──────────►│ Close       │  │
@@ -1528,12 +1534,12 @@ EDGE = Smart Relay
 ### Communication Architecture
 
 ```
-Phone App ◄────── REST + SSE ──────► Cloud ◄────── WebSocket ──────► Edge ◄───── TCP ───── Scales
-           (sessions, events)              (sessions, events)              (events)
+Phone App ◄────── REST + SSE ──────► Cloud ◄────── REST API ──────► Edge ◄───── TCP ───── Scales
+           (sessions, events)              (poll + push)                    (events)
 ```
 
 ---
 
-*Document Version: 3.0 (Cloud-Centric)*
+*Document Version: 3.1 (Cloud-Centric, REST API)*
 *Updated: January 2026*
-*Status: Architecture Complete - Cloud-Centric, WebSocket, Offline Resilience*
+*Status: Architecture Complete - Cloud-Centric, REST API (pivoted from WebSocket), Offline Resilience*

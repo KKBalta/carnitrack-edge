@@ -2,21 +2,25 @@
  * CarniTrack Edge - Cloud Communication Module
  * 
  * Handles all communication between Edge and Cloud services:
- * - WebSocket client for real-time bidirectional communication
- * - Auto-reconnection with exponential backoff
- * - Message queuing when offline
+ * - REST client for HTTP-based communication
+ * - Retry logic with exponential backoff
+ * - Request queuing when offline
+ * - Session polling for active sessions
  * - Offline batch management
  * 
- * @see GitHub Issue #4, #7
+ * @see Plan: websocket_to_rest_pivot_4f27b93c.plan.md
  */
 
 export {
-  WebSocketClient,
-  initWebSocketClient,
-  getWebSocketClient,
-  destroyWebSocketClient,
-  type WebSocketClientOptions,
-} from "./websocket-client.ts";
+  RestClient,
+  initRestClient,
+  getRestClient,
+  destroyRestClient,
+  type RestClientOptions,
+  type EventPostResponse,
+  type BatchPostResponse,
+  type SessionsResponse,
+} from "./rest-client.ts";
 
 export {
   OfflineBatchManager,

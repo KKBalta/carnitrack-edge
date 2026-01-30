@@ -60,54 +60,47 @@ export const config = {
   },
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // WEBSOCKET CONFIGURATION (Cloud Connection)
-  // Real-time bidirectional communication with Cloud
+  // REST API CONFIGURATION (Cloud Connection)
+  // HTTP-based communication with Cloud REST API
   // ═══════════════════════════════════════════════════════════════════════════
-  websocket: {
-    /** Cloud WebSocket URL */
-    url: process.env.CLOUD_WS_URL || "wss://api.carnitrack.com/edge/ws",
+  rest: {
+    /** Cloud API base URL */
+    apiUrl: process.env.CLOUD_API_URL || "https://api.carnitrack.com/api/v1/edge",
     
-    /** Initial reconnection delay (ms) */
-    reconnectDelayMs: Number(process.env.WS_RECONNECT_DELAY_MS) || 1_000,
+    /** Session polling interval (ms) */
+    sessionPollIntervalMs: Number(process.env.SESSION_POLL_INTERVAL_MS) || 5_000,
     
-    /** Maximum reconnection delay with backoff (ms) */
-    maxReconnectDelayMs: Number(process.env.WS_MAX_RECONNECT_DELAY_MS) || 30_000,
+    /** Event POST timeout (ms) */
+    eventSendTimeoutMs: Number(process.env.EVENT_SEND_TIMEOUT_MS) || 10_000,
     
-    /** Reconnection backoff multiplier */
-    reconnectBackoffMultiplier: 1.5,
+    /** Max retry attempts for failed requests */
+    maxRetries: Number(process.env.REST_MAX_RETRIES) || 3,
     
-    /** Keep-alive ping interval (ms) */
-    pingIntervalMs: Number(process.env.WS_PING_INTERVAL_MS) || 30_000,
+    /** Initial retry delay (ms) */
+    retryDelayMs: Number(process.env.REST_RETRY_DELAY_MS) || 1_000,
     
-    /** Ping timeout before considering connection dead (ms) */
-    pingTimeoutMs: Number(process.env.WS_PING_TIMEOUT_MS) || 10_000,
+    /** Retry backoff multiplier */
+    retryBackoffMultiplier: Number(process.env.REST_BACKOFF_MULTIPLIER) || 2,
     
-    /** Max reconnection attempts (Infinity = keep trying forever) */
-    maxReconnectAttempts: Infinity,
+    /** Maximum retry delay (ms) */
+    maxRetryDelayMs: Number(process.env.REST_MAX_RETRY_DELAY_MS) || 30_000,
+    
+    /** Batch size for event uploads */
+    batchSize: Number(process.env.CLOUD_BATCH_SIZE) || 50,
+    
+    /** Batch interval for pending events (ms) */
+    batchIntervalMs: Number(process.env.BATCH_INTERVAL_MS) || 5_000,
   },
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // CLOUD API CONFIGURATION (REST fallback)
-  // Used for registration, PLU sync, and batch uploads when WebSocket fails
+  // CLOUD API CONFIGURATION (Legacy - kept for backward compatibility)
   // ═══════════════════════════════════════════════════════════════════════════
   cloud: {
-    /** Cloud API base URL */
+    /** Cloud API base URL (deprecated, use rest.apiUrl) */
     apiUrl: process.env.CLOUD_API_URL || "https://api.carnitrack.com/api/v1",
     
-    /** Batch size for event uploads (fallback sync) */
+    /** Batch size for event uploads */
     batchSize: Number(process.env.CLOUD_BATCH_SIZE) || 50,
-    
-    /** Fallback sync interval when WebSocket is down (ms) */
-    fallbackSyncIntervalMs: Number(process.env.CLOUD_SYNC_INTERVAL_MS) || 30_000,
-    
-    /** Max retry attempts for failed API calls */
-    maxRetries: 3,
-    
-    /** Delay between retries (ms) */
-    retryDelayMs: 5_000,
-    
-    /** Request timeout (ms) */
-    requestTimeoutMs: 30_000,
   },
 
   // ═══════════════════════════════════════════════════════════════════════════

@@ -11,7 +11,7 @@ import { getDatabase } from "../storage/database.ts";
 import { toSqliteDate, fromSqliteDate, generateId } from "../storage/database.ts";
 import { getSessionCacheManager } from "../sessions/session-cache.ts";
 import { getOfflineBatchManager } from "../cloud/offline-batch-manager.ts";
-import { getWebSocketClient } from "../cloud/index.ts";
+import { getRestClient } from "../cloud/index.ts";
 import type { WeighingEvent, ParsedScaleEvent, EventSyncStatus } from "../types/index.ts";
 import type { WeighingEventData } from "./scale-parser.ts";
 
@@ -34,32 +34,71 @@ type EventCallback = (event: WeighingEvent) => void;
 
 export class EventProcessor {
   private eventListeners: Map<EventProcessorEvent, Set<EventCallback>> = new Map();
+  
+  /** Recent event signatures for deduplication (deviceId + pluCode + weight, without timestamp) */
+  private recentEventSignatures: Map<string, Date> = new Map();
+  
+  /** Deduplication window: events with same signature within this time are considered duplicates */
+  private readonly DEDUP_WINDOW_MS = 5000; // 5 seconds (scale sends print event 1-2 seconds after weight)
 
   /**
    * Process a weighing event from scale
    * Tags with session/batch and stores in database
+   * Includes deduplication to prevent processing the same event twice (scale sends once for weight, once for print)
    */
   processWeighingEvent(
     eventData: WeighingEventData | ParsedScaleEvent,
     deviceId: string,
     sourceIp: string | null = null
-  ): WeighingEvent {
+  ): WeighingEvent | null {
     const db = getDatabase();
     const sessionCache = getSessionCacheManager();
     const offlineBatchManager = getOfflineBatchManager();
-    const wsClient = getWebSocketClient();
+    const restClient = getRestClient();
 
     // Convert ParsedScaleEvent to WeighingEventData format if needed
     const parsedEvent: ParsedScaleEvent = this.normalizeEventData(eventData);
     
+    const scaleTimestamp = new Date(parsedEvent.timestamp);
+    const receivedAt = new Date();
+    
+    // ─────────────────────────────────────────────────────────────────────────────
+    // DEDUPLICATION: Check if this is a duplicate event
+    // Scale sends the same event twice: once for weight measurement, once for print
+    // The print event may have a slightly different timestamp (1-2 seconds later)
+    // So we match on device+PLU+weight only, ignoring timestamp differences
+    // ─────────────────────────────────────────────────────────────────────────────
+    const eventSignature = this.createEventSignature(
+      deviceId,
+      parsedEvent.pluCode,
+      parsedEvent.weightGrams
+      // Note: NOT including timestamp in signature because print event has different timestamp
+    );
+    
+    const lastSeen = this.recentEventSignatures.get(eventSignature);
+    if (lastSeen) {
+      const timeSinceLastSeen = receivedAt.getTime() - lastSeen.getTime();
+      if (timeSinceLastSeen < this.DEDUP_WINDOW_MS) {
+        // This is a duplicate - skip processing
+        console.log(`[EventProcessor] ⚠️  Duplicate event detected (${Math.round(timeSinceLastSeen)}ms ago), skipping:`);
+        console.log(`[EventProcessor]    Device: ${deviceId} | PLU: ${parsedEvent.pluCode} | Weight: ${parsedEvent.weightGrams}g`);
+        console.log(`[EventProcessor]    Scale time: ${parsedEvent.timestamp} (print event with different timestamp)`);
+        return null; // Return null to indicate duplicate was skipped
+      }
+    }
+    
+    // Update signature timestamp (use receivedAt, not scaleTimestamp, for time-based dedup)
+    this.recentEventSignatures.set(eventSignature, receivedAt);
+    
+    // Clean up old signatures (older than dedup window)
+    this.cleanupOldSignatures(receivedAt);
+    
     // Generate event ID
     const eventId = generateId();
-    const receivedAt = new Date();
-    const scaleTimestamp = new Date(parsedEvent.timestamp);
 
     // Determine session and offline mode
     const session = sessionCache.getActiveSessionForDevice(deviceId);
-    const cloudConnected = wsClient.getStatus() === "connected";
+    const cloudConnected = restClient?.isOnline() ?? false;
     const offlineMode = !cloudConnected;
     
     // Get or create offline batch if needed
@@ -139,6 +178,37 @@ export class EventProcessor {
     this.emit("event:captured", event);
 
     return event;
+  }
+
+  /**
+   * Create a signature for deduplication
+   * Format: deviceId|pluCode|weightGrams
+   * 
+   * Note: We don't include timestamp because the scale sends the same event twice:
+   * 1. First with timestamp from weight measurement (e.g., 03:43:35)
+   * 2. Second with timestamp from print request (e.g., 03:43:36, 1 second later)
+   * 
+   * We use time-based deduplication instead: if we see the same device+PLU+weight
+   * within DEDUP_WINDOW_MS (5 seconds), it's considered a duplicate.
+   */
+  private createEventSignature(
+    deviceId: string,
+    pluCode: string,
+    weightGrams: number
+  ): string {
+    return `${deviceId}|${pluCode}|${weightGrams}`;
+  }
+
+  /**
+   * Clean up old event signatures (older than dedup window)
+   */
+  private cleanupOldSignatures(now: Date): void {
+    const cutoff = now.getTime() - this.DEDUP_WINDOW_MS;
+    for (const [signature, timestamp] of this.recentEventSignatures.entries()) {
+      if (timestamp.getTime() < cutoff) {
+        this.recentEventSignatures.delete(signature);
+      }
+    }
   }
 
   /**

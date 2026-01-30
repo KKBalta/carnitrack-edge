@@ -9,7 +9,7 @@ import { initDatabase, closeDatabase, getDatabase } from "../src/storage/databas
 import { initDeviceManager } from "../src/devices/device-manager.ts";
 import { initSessionCacheManager, destroySessionCacheManager } from "../src/sessions/session-cache.ts";
 import { initOfflineBatchManager, destroyOfflineBatchManager } from "../src/cloud/offline-batch-manager.ts";
-import { initWebSocketClient, destroyWebSocketClient, getWebSocketClient } from "../src/cloud/index.ts";
+import { initRestClient, destroyRestClient, getRestClient } from "../src/cloud/index.ts";
 import { initEventProcessor, destroyEventProcessor, getEventProcessor } from "../src/devices/event-processor.ts";
 import { initCloudSyncService, destroyCloudSyncService, getCloudSyncService } from "../src/cloud/sync-service.ts";
 import { getSessionCacheManager } from "../src/sessions/session-cache.ts";
@@ -22,7 +22,7 @@ describe("Integration: Complete Event Flow", () => {
     initDeviceManager();
     initSessionCacheManager();
     initOfflineBatchManager();
-    initWebSocketClient({ autoConnect: false });
+    initRestClient({ autoStart: false, queueWhenOffline: true });
     initEventProcessor();
     initCloudSyncService();
     
@@ -45,7 +45,7 @@ describe("Integration: Complete Event Flow", () => {
     destroyEventProcessor();
     destroySessionCacheManager();
     destroyOfflineBatchManager();
-    destroyWebSocketClient();
+    destroyRestClient();
     closeDatabase();
   });
 
@@ -81,11 +81,11 @@ describe("Integration: Complete Event Flow", () => {
   it("should tag event with session when session exists", () => {
     const processor = getEventProcessor();
     const sessionCache = getSessionCacheManager();
-    const wsClient = getWebSocketClient();
+    const restClient = getRestClient();
     
-    // Mock WebSocket client to return connected status
-    const originalGetStatus = wsClient.getStatus;
-    wsClient.getStatus = mock(() => "connected");
+    // Mock REST client to return online status
+    const originalIsOnline = restClient!.isOnline.bind(restClient);
+    restClient!.isOnline = mock(() => true);
     
     // Ensure no active batches exist
     const offlineBatchManager = getOfflineBatchManager();
@@ -124,12 +124,14 @@ describe("Integration: Complete Event Flow", () => {
     expect(event.offlineMode).toBe(false);
     
     // Restore original method
-    wsClient.getStatus = originalGetStatus;
+    restClient!.isOnline = originalIsOnline;
   });
 
-  it("should create offline batch when Cloud is disconnected", () => {
+  it("should create offline batch when Cloud is offline", () => {
     const processor = getEventProcessor();
     const offlineBatchManager = getOfflineBatchManager();
+    
+    // REST client is offline by default in test (not started)
     
     // Process event (Cloud is disconnected by default in test)
     const event = processor.processWeighingEvent({
@@ -190,11 +192,11 @@ describe("Integration: Complete Event Flow", () => {
   it("should query events by session", () => {
     const processor = getEventProcessor();
     const sessionCache = getSessionCacheManager();
-    const wsClient = getWebSocketClient();
+    const restClient = getRestClient();
     
-    // Mock WebSocket client to return connected status
-    const originalGetStatus = wsClient.getStatus;
-    wsClient.getStatus = mock(() => "connected");
+    // Mock REST client to return online status
+    const originalIsOnline = restClient!.isOnline.bind(restClient);
+    restClient!.isOnline = mock(() => true);
     
     // Ensure no active batches exist
     const offlineBatchManager = getOfflineBatchManager();
@@ -240,7 +242,7 @@ describe("Integration: Complete Event Flow", () => {
     }, "SCALE-01");
     
     // Restore original method
-    wsClient.getStatus = originalGetStatus;
+    restClient!.isOnline = originalIsOnline;
 
     // Query events by session
     const sessionEvents = processor.getEventsBySession("session-123");
@@ -281,7 +283,7 @@ describe("Integration: Complete Event Flow", () => {
     // Query events by batch
     const batchEvents = processor.getEventsByBatch(batch.id);
     
-    // Note: Events might not be in batch if Cloud is "connected" in test
+    // Note: Events might not be in batch if Cloud is "online" in test
     // This test verifies the query method works
     expect(Array.isArray(batchEvents)).toBe(true);
   });
