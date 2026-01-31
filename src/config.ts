@@ -22,6 +22,9 @@ export const config = {
   // These env vars are only used for initial registration
   // ═══════════════════════════════════════════════════════════════════════════
   edge: {
+    /** Edge device name (human-readable identifier for this Edge instance) */
+    name: process.env.EDGE_NAME || "",
+    
     /** Site ID for registration (from Cloud setup) */
     siteId: process.env.SITE_ID || "",
     

@@ -11,7 +11,9 @@
     "db:setup": "bun run src/storage/setup.ts",
     "typecheck": "tsc --noEmit",
     "mock:cloud": "bun run src/cloud/mock-server.ts",
-    "dev:all": "bun run mock:cloud & sleep 1 && bun run dev"
+    "dev:all": "bun run mock:cloud & sleep 1 && bun run dev",
+    "env:create": "bun scripts/create-env.ts",
+    "env:template": "bun scripts/create-env.ts --template"
   },
   "dependencies": {},
   "devDependencies": {

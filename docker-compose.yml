@@ -23,31 +23,30 @@ services:
     # ─────────────────────────────────────────────────────────────────────────────
     ports:
       # Admin Dashboard (HTTP)
-      - "3000:3000"
+      - "${HTTP_PORT:-3000}:3000"
       # Scale TCP Server - DP-401 scales connect here
-      - "3001:3001"
+      - "${TCP_PORT:-8899}:8899"
     
     # ─────────────────────────────────────────────────────────────────────────────
     # Environment Variables
     # ─────────────────────────────────────────────────────────────────────────────
     environment:
       # Edge Identity (set these for your site)
-      - EDGE_SITE_ID=${EDGE_SITE_ID:-site-default}
-      - EDGE_SITE_NAME=${EDGE_SITE_NAME:-Default Site}
+      - EDGE_NAME=${EDGE_NAME:-}
+      - SITE_ID=${SITE_ID:-}
+      - REGISTRATION_TOKEN=${REGISTRATION_TOKEN:-}
       
       # Cloud Connection
-      - CLOUD_WS_URL=${CLOUD_WS_URL:-wss://api.carnitrack.cloud/edge/ws}
-      - CLOUD_API_URL=${CLOUD_API_URL:-https://api.carnitrack.cloud}
-      - CLOUD_API_KEY=${CLOUD_API_KEY:-}
+      - CLOUD_API_URL=${CLOUD_API_URL:-https://api.carnitrack.com/api/v1/edge}
       
       # Servers
-      - TCP_PORT=3001
-      - TCP_HOST=0.0.0.0
-      - HTTP_PORT=3000
-      - HTTP_HOST=0.0.0.0
+      - TCP_PORT=${TCP_PORT:-8899}
+      - TCP_HOST=${TCP_HOST:-0.0.0.0}
+      - HTTP_PORT=${HTTP_PORT:-3000}
+      - HTTP_HOST=${HTTP_HOST:-0.0.0.0}
       
       # Database
-      - DATABASE_PATH=/app/data/carnitrack.db
+      - DB_PATH=/app/data/carnitrack.db
       
       # Logging
       - LOG_LEVEL=${LOG_LEVEL:-info}
@@ -74,7 +73,7 @@ services:
     # Health Check
     # ─────────────────────────────────────────────────────────────────────────────
     healthcheck:
-      test: ["CMD", "bun", "--eval", "fetch('http://localhost:3000/health').then(r => process.exit(r.ok ? 0 : 1))"]
+      test: ["CMD", "bun", "--eval", "fetch('http://localhost:3000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 30s
       timeout: 10s
       retries: 3

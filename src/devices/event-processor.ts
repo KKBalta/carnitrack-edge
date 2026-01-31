@@ -125,6 +125,7 @@ export class EventProcessor {
       pluCode: parsedEvent.pluCode,
       productName: parsedEvent.productName,
       weightGrams: parsedEvent.weightGrams,
+      tareGrams: parsedEvent.tareGrams,
       barcode: parsedEvent.barcode,
       scaleTimestamp,
       receivedAt,
@@ -148,6 +149,7 @@ export class EventProcessor {
         plu_code,
         product_name,
         weight_grams,
+        tare_grams,
         barcode,
         scale_timestamp,
         received_at,
@@ -155,7 +157,7 @@ export class EventProcessor {
         raw_data,
         sync_status,
         sync_attempts
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       event.id,
       event.deviceId,
@@ -165,6 +167,7 @@ export class EventProcessor {
       event.pluCode,
       event.productName,
       event.weightGrams,
+      event.tareGrams,
       event.barcode,
       toSqliteDate(event.scaleTimestamp),
       toSqliteDate(event.receivedAt),
@@ -228,6 +231,7 @@ export class EventProcessor {
       pluCode: data.pluCode,
       productName: data.productName,
       weightGrams: data.weightGrams,
+      tareGrams: data.tareGrams,
       barcode: data.barcode,
       timestamp: data.timestamp.toISOString(),
       operator: data.operator,
@@ -254,6 +258,7 @@ export class EventProcessor {
         plu_code,
         product_name,
         weight_grams,
+        tare_grams,
         barcode,
         scale_timestamp,
         received_at,
@@ -275,6 +280,7 @@ export class EventProcessor {
       plu_code: string;
       product_name: string;
       weight_grams: number;
+      tare_grams: number;
       barcode: string;
       scale_timestamp: string;
       received_at: string;
@@ -300,6 +306,7 @@ export class EventProcessor {
       pluCode: row.plu_code,
       productName: row.product_name,
       weightGrams: row.weight_grams,
+      tareGrams: row.tare_grams,
       barcode: row.barcode,
       scaleTimestamp: fromSqliteDate(row.scale_timestamp)!,
       receivedAt: fromSqliteDate(row.received_at)!,
@@ -328,6 +335,7 @@ export class EventProcessor {
         plu_code,
         product_name,
         weight_grams,
+        tare_grams,
         barcode,
         scale_timestamp,
         received_at,
@@ -350,6 +358,7 @@ export class EventProcessor {
       plu_code: string;
       product_name: string;
       weight_grams: number;
+      tare_grams: number;
       barcode: string;
       scale_timestamp: string;
       received_at: string;
@@ -371,6 +380,7 @@ export class EventProcessor {
       pluCode: row.plu_code,
       productName: row.product_name,
       weightGrams: row.weight_grams,
+      tareGrams: row.tare_grams,
       barcode: row.barcode,
       scaleTimestamp: fromSqliteDate(row.scale_timestamp)!,
       receivedAt: fromSqliteDate(row.received_at)!,
@@ -399,6 +409,7 @@ export class EventProcessor {
         plu_code,
         product_name,
         weight_grams,
+        tare_grams,
         barcode,
         scale_timestamp,
         received_at,
@@ -421,6 +432,7 @@ export class EventProcessor {
       plu_code: string;
       product_name: string;
       weight_grams: number;
+      tare_grams: number;
       barcode: string;
       scale_timestamp: string;
       received_at: string;
@@ -442,6 +454,7 @@ export class EventProcessor {
       pluCode: row.plu_code,
       productName: row.product_name,
       weightGrams: row.weight_grams,
+      tareGrams: row.tare_grams,
       barcode: row.barcode,
       scaleTimestamp: fromSqliteDate(row.scale_timestamp)!,
       receivedAt: fromSqliteDate(row.received_at)!,
@@ -470,6 +483,7 @@ export class EventProcessor {
         plu_code,
         product_name,
         weight_grams,
+        tare_grams,
         barcode,
         scale_timestamp,
         received_at,
@@ -493,6 +507,7 @@ export class EventProcessor {
       plu_code: string;
       product_name: string;
       weight_grams: number;
+      tare_grams: number;
       barcode: string;
       scale_timestamp: string;
       received_at: string;
@@ -514,6 +529,7 @@ export class EventProcessor {
       pluCode: row.plu_code,
       productName: row.product_name,
       weightGrams: row.weight_grams,
+      tareGrams: row.tare_grams,
       barcode: row.barcode,
       scaleTimestamp: fromSqliteDate(row.scale_timestamp)!,
       receivedAt: fromSqliteDate(row.received_at)!,
@@ -542,6 +558,7 @@ export class EventProcessor {
         plu_code,
         product_name,
         weight_grams,
+        tare_grams,
         barcode,
         scale_timestamp,
         received_at,
@@ -565,6 +582,7 @@ export class EventProcessor {
       plu_code: string;
       product_name: string;
       weight_grams: number;
+      tare_grams: number;
       barcode: string;
       scale_timestamp: string;
       received_at: string;
@@ -586,6 +604,7 @@ export class EventProcessor {
       pluCode: row.plu_code,
       productName: row.product_name,
       weightGrams: row.weight_grams,
+      tareGrams: row.tare_grams,
       barcode: row.barcode,
       scaleTimestamp: fromSqliteDate(row.scale_timestamp)!,
       receivedAt: fromSqliteDate(row.received_at)!,

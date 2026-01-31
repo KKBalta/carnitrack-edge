@@ -233,7 +233,7 @@ function handleParsedPacket(socketId: string, packet: ParsedPacket, meta: Socket
       
       console.log(`[TCP] ⚖️  Weight event from ${deviceId}`);
       console.log(`[TCP]    PLU: ${eventData.pluCode} | Product: ${eventData.productName.trim()}`);
-      console.log(`[TCP]    Weight: ${eventData.weightGrams}g | Barcode: ${eventData.barcode}`);
+      console.log(`[TCP]    Weight: ${eventData.weightGrams}g | Tare: ${eventData.tareGrams}g | Barcode: ${eventData.barcode}`);
       console.log(`[TCP]    Time: ${eventData.time} ${eventData.date} | Operator: ${eventData.operator.trim()}`);
       
       // Update device last event time via DeviceManager
@@ -345,12 +345,15 @@ async function performEdgeRegistration(restClient: ReturnType<typeof getRestClie
   }
 
   console.log("[REGISTRATION] Registering Edge with Cloud...");
+  if (config.edge.name) {
+    console.log(`[REGISTRATION] Edge Name: ${config.edge.name}`);
+  }
   
   try {
     const registrationData = {
       edgeId: state.edgeId || null,
       siteId: config.edge.siteId || state.siteId || null,
-      siteName: config.edge.siteId ? `Site ${config.edge.siteId}` : state.siteName || null,
+      siteName: config.edge.name || (config.edge.siteId ? `Site ${config.edge.siteId}` : state.siteName || null),
       version: "0.3.0",
       capabilities: ["rest", "tcp"],
     };
@@ -885,7 +888,10 @@ async function handleApi(req: Request, path: string): Promise<Response> {
   // PUT /api/devices/:deviceId - Update device config (rename, location, etc.)
   const deviceUpdateMatch = path.match(/^\/api\/devices\/([A-Za-z0-9-]+)$/);
   if (deviceUpdateMatch && req.method === "PUT") {
-    const deviceId = deviceUpdateMatch[1];
+    let deviceId = deviceUpdateMatch[1];
+    
+    // Normalize device ID to uppercase (device IDs are always uppercase like "SCALE-01")
+    deviceId = deviceId.toUpperCase();
     
     try {
       const body = await req.json() as {
@@ -894,14 +900,28 @@ async function handleApi(req: Request, path: string): Promise<Response> {
         deviceType?: string;
       };
       
+      // Normalize empty strings to null (database expects null, not empty string)
+      const normalizedDisplayName = body.displayName === "" ? null : body.displayName;
+      const normalizedLocation = body.location === "" ? null : body.location;
+      
+      // Check if device exists before attempting update
+      const existingDevice = deviceManager.getDevice(deviceId);
+      if (!existingDevice) {
+        return Response.json({ 
+          success: false, 
+          error: `Device not found: ${deviceId}. Make sure the device is registered first (it must send a SCALE-XX packet).`,
+          availableDevices: deviceManager.getAllDevices().map(d => d.deviceId)
+        }, { status: 404 });
+      }
+      
       const success = deviceManager.updateDeviceConfig(deviceId, {
-        displayName: body.displayName,
-        location: body.location,
+        displayName: normalizedDisplayName,
+        location: normalizedLocation,
         deviceType: body.deviceType as "disassembly" | "retail" | "receiving" | undefined,
       });
       
       if (!success) {
-        return Response.json({ success: false, error: "Device not found" }, { status: 404 });
+        return Response.json({ success: false, error: "Failed to update device config" }, { status: 500 });
       }
       
       const device = deviceManager.getDevice(deviceId);
@@ -917,7 +937,8 @@ async function handleApi(req: Request, path: string): Promise<Response> {
         } : null,
       });
     } catch (e) {
-      return Response.json({ success: false, error: "Invalid request body" }, { status: 400 });
+      const errorMessage = e instanceof Error ? e.message : "Invalid request body";
+      return Response.json({ success: false, error: errorMessage }, { status: 400 });
     }
   }
   

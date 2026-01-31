@@ -1,0 +1,67 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# CarniTrack Edge Service - Production Overrides
+# ═══════════════════════════════════════════════════════════════════════════
+# 
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Production-specific configurations:
+#   - Resource limits
+#   - Security settings
+#   - Logging configuration
+#   - Health check tuning
+# ═══════════════════════════════════════════════════════════════════════════════
+
+services:
+  carnitrack-edge:
+    # ─────────────────────────────────────────────────────────────────────────────
+    # Resource Limits (Production)
+    # ─────────────────────────────────────────────────────────────────────────────
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+    
+    # ─────────────────────────────────────────────────────────────────────────────
+    # Security
+    # ─────────────────────────────────────────────────────────────────────────────
+    security_opt:
+      - no-new-privileges:true
+    
+    read_only: false  # Set to true if you want read-only rootfs (requires tmpfs for /tmp)
+    
+    # ─────────────────────────────────────────────────────────────────────────────
+    # Restart Policy
+    # ─────────────────────────────────────────────────────────────────────────────
+    restart: always
+    
+    # ─────────────────────────────────────────────────────────────────────────────
+    # Health Check (Production Tuning)
+    # ─────────────────────────────────────────────────────────────────────────────
+    healthcheck:
+      test: ["CMD", "bun", "--eval", "fetch('http://localhost:3000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    
+    # ─────────────────────────────────────────────────────────────────────────────
+    # Logging (Production)
+    # ─────────────────────────────────────────────────────────────────────────────
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+        compress: "true"
+    
+    # ─────────────────────────────────────────────────────────────────────────────
+    # Environment (Production)
+    # ─────────────────────────────────────────────────────────────────────────────
+    environment:
+      - NODE_ENV=production
+      - LOG_LEVEL=info

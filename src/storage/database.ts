@@ -133,6 +133,7 @@ CREATE TABLE IF NOT EXISTS events (
     plu_code TEXT,
     product_name TEXT,
     weight_grams INTEGER,
+    tare_grams INTEGER DEFAULT 0,  -- Tare weight (dara) in grams
     barcode TEXT,
     
     -- Timestamps
@@ -292,6 +293,21 @@ export function initDatabase(): Database {
   
   // Run schema
   database.exec(SCHEMA);
+  
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // MIGRATIONS: Add new columns to existing tables if they don't exist
+  // ═══════════════════════════════════════════════════════════════════════════════
+  
+  // Migration: Add tare_grams column to events table (if it doesn't exist)
+  try {
+    // Check if column exists by trying to select it
+    database.exec(`SELECT tare_grams FROM events LIMIT 1`);
+  } catch (e) {
+    // Column doesn't exist, add it
+    console.log(`[DB] Adding tare_grams column to events table...`);
+    database.exec(`ALTER TABLE events ADD COLUMN tare_grams INTEGER DEFAULT 0`);
+    console.log(`[DB] ✓ Migration complete: tare_grams column added`);
+  }
   
   // Store reference
   db = database;

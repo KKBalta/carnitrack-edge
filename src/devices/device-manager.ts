@@ -683,38 +683,58 @@ export class DeviceManager {
     needsConfig: boolean;
   }>): boolean {
     const device = this.devices.get(deviceId);
-    if (!device) return false;
+    if (!device) {
+      console.log(`[DeviceManager] ✗ Device not found: ${deviceId}`);
+      console.log(`[DeviceManager] Available devices: ${Array.from(this.devices.keys()).join(", ")}`);
+      return false;
+    }
     
     const dbUpdates: Partial<DeviceRow> = {};
+    const changes: string[] = [];
     
     // Update both in-memory state and database
     if (updates.displayName !== undefined) {
+      const oldName = device.displayName;
       device.displayName = updates.displayName;
       dbUpdates.display_name = updates.displayName;
+      changes.push(`displayName: "${oldName}" → "${updates.displayName}"`);
     }
     if (updates.location !== undefined) {
+      const oldLocation = device.location;
       device.location = updates.location;
       dbUpdates.location = updates.location;
+      changes.push(`location: "${oldLocation}" → "${updates.location}"`);
     }
     if (updates.deviceType !== undefined) {
+      const oldType = device.deviceType;
       device.deviceType = updates.deviceType;
       dbUpdates.device_type = updates.deviceType;
+      changes.push(`deviceType: "${oldType}" → "${updates.deviceType}"`);
     }
     if (updates.workHoursStart !== undefined) {
       dbUpdates.work_hours_start = updates.workHoursStart;
+      changes.push(`workHoursStart: "${updates.workHoursStart}"`);
     }
     if (updates.workHoursEnd !== undefined) {
       dbUpdates.work_hours_end = updates.workHoursEnd;
+      changes.push(`workHoursEnd: "${updates.workHoursEnd}"`);
     }
     if (updates.needsConfig !== undefined) {
       dbUpdates.needs_config = updates.needsConfig ? 1 : 0;
+      changes.push(`needsConfig: ${updates.needsConfig}`);
+    }
+    
+    if (changes.length === 0) {
+      console.log(`[DeviceManager] No changes to apply for ${deviceId}`);
+      return true; // No changes, but device exists
     }
     
     this.updateDeviceInDatabase(deviceId, dbUpdates);
     this.emit("updated", device);
     
     const name = device.displayName || deviceId;
-    console.log(`[DeviceManager] Device config updated: ${name} (${deviceId})`);
+    console.log(`[DeviceManager] ✓ Device config updated: ${name} (${deviceId})`);
+    console.log(`[DeviceManager]   Changes: ${changes.join(", ")}`);
     return true;
   }
   

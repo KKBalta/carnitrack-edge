@@ -267,6 +267,9 @@ export interface WeighingEvent {
   /** Weight in grams */
   weightGrams: number;
   
+  /** Tare weight (dara) in grams */
+  tareGrams: number;
+  
   /** Generated barcode */
   barcode: string;
   
@@ -305,6 +308,7 @@ export interface ParsedScaleEvent {
   pluCode: string;
   productName: string;
   weightGrams: number;
+  tareGrams: number;
   barcode: string;
   timestamp: string;
   operator?: string;

@@ -37,9 +37,11 @@ describe("Scale Parser", () => {
       expect(result.errors.length).toBe(0);
     });
 
-    it("should parse weighing event CSV", () => {
-      // CSV format: PLU,TIME,DATE,PRODUCT,BARCODE,CODE,OPERATOR,VAL1(weight),DISPLAY,VAL2,FLAGS...,COMPANY
-      // Weight is read from VAL1 field (index 7): 0000002500 = 2500 grams
+    it("should parse weighing event CSV with large values (in grams)", () => {
+      // CSV format: PLU,TIME,DATE,PRODUCT,BARCODE,CODE,OPERATOR,VAL1(gross),VAL2(tare),VAL3(net),FLAGS...,COMPANY
+      // Large values (>= 1000) are already in grams
+      // Weight is read from VAL3 field (index 9): 0000037500 = 37500 grams (net weight)
+      // Tare is read from VAL2 field (index 8): 0000000000 = 0 grams
       const csvLine = "00001,10:30:00,30.01.2026,KIYMA           ,2000001025004,000,MEHMET        ,0000002500,0000000000,0000037500,0,0,0,1,N,TEST COMPANY";
       const result = parser.parse("socket-123", Buffer.from(csvLine + "\n"));
       
@@ -48,9 +50,29 @@ describe("Scale Parser", () => {
       if (result.packets[0].type === "weighing_event") {
         expect(result.packets[0].event.pluCode).toBe("00001");
         expect(result.packets[0].event.productName.trim()).toBe("KIYMA");
-        expect(result.packets[0].event.weightGrams).toBe(2500);
+        expect(result.packets[0].event.weightGrams).toBe(37500); // Net weight from VAL3 (already in grams)
+        expect(result.packets[0].event.tareGrams).toBe(0); // Tare from VAL2
         expect(result.packets[0].event.barcode).toBe("2000001025004");
         expect(result.packets[0].event.operator.trim()).toBe("MEHMET");
+      }
+      expect(result.errors.length).toBe(0);
+    });
+
+    it("should parse weighing event CSV with small values (in 0.1 kg units)", () => {
+      // Small values (< 1000) are in 0.1 kg units - multiply by 100 to get grams
+      // Example: 0000000014 = 14 → 14 * 100 = 1400 grams (1.4 kg)
+      const csvLine = "00001,06:25:17,30.01.2026,BONF�LE         ,000000000004,0000,KAAN                                            ,0000000027,0000000013,0000000014,1,0,1,1,N,KORKUT KAAN BALTA";
+      const result = parser.parse("socket-123", Buffer.from(csvLine + "\n"));
+      
+      expect(result.packets.length).toBe(1);
+      expect(result.packets[0].type).toBe("weighing_event");
+      if (result.packets[0].type === "weighing_event") {
+        expect(result.packets[0].event.pluCode).toBe("00001");
+        expect(result.packets[0].event.productName.trim()).toBe("BONF�LE");
+        expect(result.packets[0].event.weightGrams).toBe(1400); // Net weight: 14 * 100 = 1400 grams (1.4 kg)
+        expect(result.packets[0].event.tareGrams).toBe(1300); // Tare: 13 * 100 = 1300 grams (1.3 kg)
+        expect(result.packets[0].event.barcode).toBe("000000000004");
+        expect(result.packets[0].event.operator.trim()).toBe("KAAN");
       }
       expect(result.errors.length).toBe(0);
     });

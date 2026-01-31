@@ -86,13 +86,16 @@ export interface WeighingEventData {
   /** Operator name (48 chars, padded) */
   operator: string;
   
-  /** Weight in grams (parsed from 10-digit field) */
+  /** Net weight in grams (parsed from field [9] VAL3) */
   weightGrams: number;
   
-  /** Value 1 (cumulative/total - stored for reference) */
+  /** Tare weight (dara) in grams (parsed from field [8] VAL2) */
+  tareGrams: number;
+  
+  /** Value 1 (gross/total weight from field [7] VAL1 - stored for reference) */
   value1: string;
   
-  /** Value 2 (calculated value - stored for reference) */
+  /** Value 2 (not used, kept for compatibility) */
   value2: string;
   
   /** Flags from scale */
@@ -350,16 +353,30 @@ export class ScaleParser {
    * Parse weighing event from CSV line
    * 
    * Format from DP-401:
-   * PLU,TIME,DATE,PRODUCT,BARCODE,CODE,OPERATOR,VAL1,WEIGHT,VAL2,FLAGS...,COMPANY
+   * PLU,TIME,DATE,PRODUCT,BARCODE,CODE,OPERATOR,VAL1,VAL2,VAL3,FLAGS...,COMPANY
    * 
-   * Based on actual data analysis:
-   * - Field [7] (VAL1): Contains the actual weight in grams (e.g., "0038319201" = 38319201 grams)
-   * - Field [8]: Appears to be a display/calculated value (often "0000000000")
-   * - Field [9] (VAL2): May contain net weight or duplicate of VAL1
+   * Field mapping based on actual scale data:
+   * - Field [0]: Original PLU code (5 digits) - kept for reference
+   * - Field [1]: Time (HH:MM:SS)
+   * - Field [2]: Date (DD.MM.YYYY)
+   * - Field [3]: Product name (16 chars, padded)
+   * - Field [4]: Barcode (12 digits) - **Used as PLU code** (actual PLU identifier)
+   * - Field [5]: Code field
+   * - Field [6]: Operator name (48 chars, padded)
+   * - Field [7] (VAL1): Gross/total weight
+   * - Field [8] (VAL2): Tare weight (dara)
+   * - Field [9] (VAL3): Net weight (actual weight to use)
+   * - Field [10+]: Flags and company name
    * 
-   * Example:
-   * 00001,01:44:22,30.01.2026,KIYMA,000000000001,0000,KAAN,0038319201,0000000000,0038319201,0,0,0,1,N,KORKUT KAAN BALTA
-   * Weight should be parsed from field [7] (VAL1): 38319201 grams
+   * Weight Format:
+   * - Small values (< 1000): In 0.1 kg units (multiply by 100 for grams)
+   * - Large values (≥ 1000): Already in grams
+   * 
+   * Examples:
+   * 00001,06:25:17,30.01.2026,BONF�LE,000000000004,0000,KAAN,0000000027,0000000013,0000000014,1,0,1,1,N,KORKUT KAAN BALTA
+   * - Net weight (VAL3): 0000000014 = 14 → 1400 grams (1.4 kg)
+   * - Tare (VAL2): 0000000013 = 13 → 1300 grams (1.3 kg)
+   * - Total (VAL1): 0000000027 = 27 → 2700 grams (2.7 kg)
    */
   private parseWeighingEvent(line: string): WeighingEventData | null {
     const fields = line.split(",");
@@ -367,28 +384,6 @@ export class ScaleParser {
     // Minimum fields check
     if (fields.length < MIN_EVENT_FIELDS) {
       log("debug", `Event has too few fields: ${fields.length} < ${MIN_EVENT_FIELDS}`);
-      return null;
-    }
-
-    // Extract PLU code - may have prefixes like P" from scale acknowledgment response
-    let pluCode = fields[0]?.trim() || "";
-    
-    // Strip P" prefix if present (scale sends this after acknowledgment)
-    if (pluCode.startsWith('P"')) {
-      pluCode = pluCode.slice(2);
-      log("debug", `Stripped P" prefix, PLU now: ${pluCode}`);
-    }
-    // Also handle just P prefix
-    if (pluCode.startsWith('P')) {
-      pluCode = pluCode.slice(1);
-      log("debug", `Stripped P prefix, PLU now: ${pluCode}`);
-    }
-    // Strip any leading/trailing quotes
-    pluCode = pluCode.replace(/^["']|["']$/g, "");
-    
-    // Validate PLU code format (5 digits)
-    if (!pluCode || !/^\d{5}$/.test(pluCode)) {
-      log("debug", `Invalid PLU code: ${pluCode}`);
       return null;
     }
 
@@ -412,18 +407,29 @@ export class ScaleParser {
     // Extract fields
     const productName = fields[3]?.trim() || "";
     const barcode = fields[4]?.trim() || "";
+    
+    // Use barcode as PLU code (barcode field contains the actual PLU code)
+    // Strip any leading/trailing quotes and whitespace
+    let pluCode = barcode.replace(/^["']|["']$/g, "").trim();
+    
+    // Validate PLU code format (accepts 12-digit barcode format or 5-digit format)
+    if (!pluCode || !/^\d{5,12}$/.test(pluCode)) {
+      log("debug", `Invalid PLU code (from barcode field): ${pluCode}`);
+      return null;
+    }
     const code = fields[5]?.trim() || "";
     const operator = fields[6]?.trim() || "";
     
-    // Weight is in field [7] (VAL1), typically 10 digits representing grams
-    // Field [8] appears to be a display/calculated value (often zeros)
-    // Field [9] (VAL2) may contain net weight or duplicate of VAL1
-    const value1 = fields[7]?.trim() || "";
-    const weightRaw = value1 || "0"; // Use VAL1 as the weight source
-    const weightGrams = this.parseWeight(weightRaw);
+    // Weight parsing - corrected based on actual scale data:
+    // Field [7] (VAL1): Gross/total weight (for reference)
+    // Field [8] (VAL2): Tare weight (dara) in grams
+    // Field [9] (VAL3): Net weight in grams (actual weight to use)
+    const value1 = fields[7]?.trim() || ""; // VAL1 - gross/total
+    const tareRaw = fields[8]?.trim() || ""; // VAL2 - tare/dara
+    const weightRaw = fields[9]?.trim() || ""; // VAL3 - net weight (actual weight)
     
-    const displayWeight = fields[8]?.trim() || ""; // Field [8] - display value
-    const value2 = fields[9]?.trim() || "";
+    const weightGrams = this.parseWeight(weightRaw);
+    const tareGrams = this.parseWeight(tareRaw);
     
     // Flags are the remaining fields until company (typically last)
     // Structure: 0,0,0,1,N,COMPANY
@@ -442,8 +448,9 @@ export class ScaleParser {
       code,
       operator,
       weightGrams,
-      value1: displayWeight, // Store field [8] as value1 for reference
-      value2, // Store field [9] as value2
+      tareGrams, // Tare weight (dara) from field [8] (VAL2)
+      value1, // VAL1 (gross/total) from field [7] for reference
+      value2: "", // Not used, kept for compatibility
       flags,
       company,
       rawData: line,
@@ -475,11 +482,19 @@ export class ScaleParser {
   /**
    * Parse weight from raw value
    * 
-   * The DP-401 sends weight as a 10-digit number in grams.
-   * Example: "0038319201" = 38319201 grams = 38319.201 kg
+   * The DP-401 scale sends weight values in different formats depending on configuration:
+   * - Small values (< 1000): Sent in 0.1 kg units (e.g., "0000000014" = 14 = 1.4 kg = 1400 grams)
+   * - Large values (>= 1000): Sent directly in grams (e.g., "0000009676" = 9676 grams)
    * 
-   * The weight value comes from VAL1 field (field [7] in CSV).
-   * This represents the actual weight measured by the scale in grams.
+   * Weight values come from:
+   * - VAL3 (field [9]): Net weight (actual weight to use)
+   * - VAL2 (field [8]): Tare weight (dara)
+   * - VAL1 (field [7]): Gross/total weight (for reference)
+   * 
+   * Examples:
+   * - "0000000014" = 14 → 14 * 100 = 1400 grams (1.4 kg)
+   * - "0000000013" = 13 → 13 * 100 = 1300 grams (1.3 kg)
+   * - "0000009676" = 9676 → 9676 grams (already in grams)
    */
   private parseWeight(raw: string): number {
     const weight = parseInt(raw, 10);
@@ -488,7 +503,13 @@ export class ScaleParser {
       return 0;
     }
     
-    // Weight is in grams (10-digit number from scale)
+    // If value is less than 1000, it's likely in 0.1 kg units (multiply by 100 to get grams)
+    // If value is 1000 or more, it's already in grams
+    if (weight < 1000) {
+      return weight * 100; // Convert from 0.1 kg units to grams
+    }
+    
+    // Already in grams
     return weight;
   }
 
@@ -607,6 +628,7 @@ export function toScaleMessage(packet: ParsedPacket): ScaleMessage {
           pluCode: packet.event.pluCode,
           productName: packet.event.productName,
           weightGrams: packet.event.weightGrams,
+          tareGrams: packet.event.tareGrams,
           barcode: packet.event.barcode,
           timestamp: packet.event.timestamp.toISOString(),
           operator: packet.event.operator,
@@ -638,6 +660,7 @@ export function toParsedScaleEvent(event: WeighingEventData): ParsedScaleEvent {
     pluCode: event.pluCode,
     productName: event.productName,
     weightGrams: event.weightGrams,
+    tareGrams: event.tareGrams,
     barcode: event.barcode,
     timestamp: event.timestamp.toISOString(),
     operator: event.operator,
