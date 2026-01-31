@@ -1,12 +1,60 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-# CarniTrack Edge Service - Docker Compose
+# CarniTrack Edge Service - Test/Development with Mock Server
 # ═══════════════════════════════════════════════════════════════════════════════
 # 
-# Usage:
-#   Development:  docker compose up
-#   Production:   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
-#   Logs:         docker compose logs -f carnitrack-edge
-#   Stop:         docker compose down
+# This compose file is for testing the Edge service with:
+#   - Mock REST server running on HOST machine (not in Docker)
+#   - SQLite data persisted in Docker volumes
+#   - Scales connecting via host machine's STATIC IP
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+# STATIC IP SETUP (IMPORTANT FOR SCALES)
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# 1. Assign a static IP to your Edge server machine (e.g., 192.168.1.100)
+#    - macOS: System Settings → Network → Wi-Fi/Ethernet → Details → TCP/IP
+#    - Linux: Edit /etc/netplan/*.yaml or use nmcli
+#    - Windows: Network Settings → Ethernet → IP Assignment
+#
+# 2. Configure your DP-401 scales to connect to: <STATIC_IP>:8899
+#    Example: 192.168.1.100:8899
+#
+# 3. Ensure the static IP is outside your router's DHCP range to avoid conflicts
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+# USAGE
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+#   STEP 1: Start mock server on host terminal:
+#           bun run src/cloud/mock-rest-server.ts
+#
+#   STEP 2: Build and start Docker Edge (in another terminal):
+#           HOST_IP=192.168.1.100 docker compose -f docker-compose.test.yml up -d --build
+#           (Replace 192.168.1.100 with your actual static IP)
+#
+#   STEP 3: View logs:
+#           docker compose -f docker-compose.test.yml logs -f
+#
+#   STEP 4: Check Edge health:
+#           curl http://localhost:3000/health
+#
+#   STEP 5: Stop when done:
+#           docker compose -f docker-compose.test.yml down
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+# DATA PERSISTENCE (SQLite)
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+#   - SQLite database stored in Docker volume: 'carnitrack-edge-data'
+#   - Data survives: container restarts, rebuilds, Docker daemon restarts
+#   - Data is ONLY lost if you explicitly delete the volume:
+#       docker volume rm carnitrack-edge-data  (DON'T DO THIS IN PRODUCTION!)
+#
+#   To backup the database:
+#       docker cp carnitrack-edge-test:/app/data/carnitrack.db ./backup.db
+#
+#   To restore from backup:
+#       docker cp ./backup.db carnitrack-edge-test:/app/data/carnitrack.db
 #
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -15,7 +63,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: carnitrack-edge
+    container_name: carnitrack-edge-test
     restart: unless-stopped
     
     # ─────────────────────────────────────────────────────────────────────────────
@@ -23,40 +71,47 @@ services:
     # ─────────────────────────────────────────────────────────────────────────────
     ports:
       # Admin Dashboard (HTTP)
-      - "${HTTP_PORT:-3000}:3000"
+      - "3000:3000"
       # Scale TCP Server - DP-401 scales connect here
-      - "${TCP_PORT:-8899}:8899"
+      - "8899:8899"
     
     # ─────────────────────────────────────────────────────────────────────────────
     # Environment Variables
     # ─────────────────────────────────────────────────────────────────────────────
     environment:
-      # Edge Identity (set these for your site)
-      - EDGE_NAME=${EDGE_NAME:-}
-      - SITE_ID=${SITE_ID:-}
-      - REGISTRATION_TOKEN=${REGISTRATION_TOKEN:-}
+      # Edge Identity
+      - EDGE_NAME=${EDGE_NAME:-CarniTrack-Edge-Docker}
+      - SITE_ID=${SITE_ID:-SITE-DOCKER-01}
+      - REGISTRATION_TOKEN=${REGISTRATION_TOKEN:-test-token}
       
-      # Cloud Connection
-      - CLOUD_API_URL=${CLOUD_API_URL:-https://api.carnitrack.com/api/v1/edge}
+      # IMPORTANT: Connect to mock server running on HOST machine
+      # host.docker.internal resolves to the host's IP from inside Docker
+      # Mock server runs on port 4000 by default
+      - CLOUD_API_URL=${CLOUD_API_URL:-http://host.docker.internal:4000/api/v1/edge}
+      
+      # HOST_IP: Your machine's IP address for scales to connect
+      # Set this to your static IP so it displays correctly in logs
+      # Example: HOST_IP=192.168.1.100
+      - HOST_IP=${HOST_IP:-}
       
       # Servers
-      - TCP_PORT=${TCP_PORT:-8899}
-      - TCP_HOST=${TCP_HOST:-0.0.0.0}
-      - HTTP_PORT=${HTTP_PORT:-3000}
-      - HTTP_HOST=${HTTP_HOST:-0.0.0.0}
+      - TCP_PORT=8899
+      - TCP_HOST=0.0.0.0
+      - HTTP_PORT=3000
+      - HTTP_HOST=0.0.0.0
       
-      # Database
+      # Database (inside container, persisted via volume)
       - DB_PATH=/app/data/carnitrack.db
       
-      # Logging
-      - LOG_LEVEL=${LOG_LEVEL:-info}
-      - NODE_ENV=${NODE_ENV:-production}
+      # Logging (verbose for testing)
+      - LOG_LEVEL=${LOG_LEVEL:-debug}
+      - NODE_ENV=development
     
     # ─────────────────────────────────────────────────────────────────────────────
-    # Volumes - Persist data across container restarts
+    # Volumes - PERSIST DATA ACROSS CONTAINER RESTARTS
     # ─────────────────────────────────────────────────────────────────────────────
     volumes:
-      # SQLite database - CRITICAL: persist this!
+      # SQLite database - CRITICAL: this ensures data survives container death
       - carnitrack-data:/app/data
       # Logs
       - carnitrack-logs:/app/logs
@@ -64,24 +119,19 @@ services:
       - carnitrack-generated:/app/generated
     
     # ─────────────────────────────────────────────────────────────────────────────
-    # Extra Hosts (for connecting to mock server on host machine)
-    # Allows container to access services running on host via host.docker.internal
+    # Extra Hosts (for Linux compatibility)
+    # On macOS, host.docker.internal works out of the box
+    # On Linux, we need to add this mapping
     # ─────────────────────────────────────────────────────────────────────────────
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    
-    # ─────────────────────────────────────────────────────────────────────────────
-    # Network
-    # ─────────────────────────────────────────────────────────────────────────────
-    networks:
-      - carnitrack-network
     
     # ─────────────────────────────────────────────────────────────────────────────
     # Health Check
     # ─────────────────────────────────────────────────────────────────────────────
     healthcheck:
       test: ["CMD", "bun", "--eval", "fetch('http://localhost:3000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
-      interval: 30s
+      interval: 15s
       timeout: 10s
       retries: 3
       start_period: 10s
@@ -96,7 +146,7 @@ services:
         max-file: "3"
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Volumes
+# Volumes - Named volumes persist data even when containers are removed
 # ═══════════════════════════════════════════════════════════════════════════════
 volumes:
   carnitrack-data:
@@ -105,11 +155,3 @@ volumes:
     name: carnitrack-edge-logs
   carnitrack-generated:
     name: carnitrack-edge-generated
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Networks
-# ═══════════════════════════════════════════════════════════════════════════════
-networks:
-  carnitrack-network:
-    name: carnitrack-network
-    driver: bridge

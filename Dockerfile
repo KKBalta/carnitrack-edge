@@ -42,8 +42,11 @@ FROM oven/bun:1-slim AS runtime
 
 WORKDIR /app
 
-# Create non-root user for security
-RUN addgroup --system --gid 1001 carnitrack && \
+# Install adduser package (not included in slim image) and create non-root user
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends adduser && \
+    rm -rf /var/lib/apt/lists/* && \
+    addgroup --system --gid 1001 carnitrack && \
     adduser --system --uid 1001 --ingroup carnitrack carnitrack
 
 # Create directories for data persistence

@@ -16,6 +16,7 @@
  * - Provides minimal admin dashboard for debugging/monitoring
  */
 
+import { networkInterfaces } from "os";
 import { config } from "./config.ts";
 import { initDatabase, closeDatabase, getAllEdgeConfig, setEdgeConfig } from "./storage/database.ts";
 import { TCPServer, setGlobalTCPServer } from "./devices/tcp-server.ts";
@@ -98,6 +99,65 @@ const BANNER = `
 ║                                                                               ║
 ╚═══════════════════════════════════════════════════════════════════════════════╝
 `;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// UTILITY: GET LOCAL IP ADDRESS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Get the local IP addresses of this machine
+ * Returns all non-internal IPv4 addresses
+ */
+function getLocalIpAddresses(): string[] {
+  const interfaces = networkInterfaces();
+  const addresses: string[] = [];
+  
+  for (const name of Object.keys(interfaces)) {
+    const nets = interfaces[name];
+    if (!nets) continue;
+    
+    for (const net of nets) {
+      // Skip internal (i.e., 127.0.0.1) and non-IPv4 addresses
+      if (net.family === 'IPv4' && !net.internal) {
+        addresses.push(net.address);
+      }
+    }
+  }
+  
+  return addresses;
+}
+
+/**
+ * Get the primary local IP address (first non-internal IPv4)
+ * If HOST_IP environment variable is set (useful in Docker), use that instead
+ */
+function getPrimaryLocalIp(): string {
+  // Allow override via environment variable (useful for Docker containers)
+  if (process.env.HOST_IP) {
+    return process.env.HOST_IP;
+  }
+  const addresses = getLocalIpAddresses();
+  return addresses[0] || '127.0.0.1';
+}
+
+/**
+ * Check if we're likely running inside a Docker container
+ */
+function isRunningInDocker(): boolean {
+  // Check for /.dockerenv file or cgroup containing docker
+  try {
+    const cgroupContent = Bun.file('/proc/1/cgroup').text();
+    return cgroupContent.then(content => content.includes('docker')).catch(() => false);
+  } catch {
+    // Try checking for .dockerenv
+    try {
+      Bun.file('/.dockerenv');
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TCP EVENT HANDLERS
@@ -467,10 +527,14 @@ async function main() {
   // ─────────────────────────────────────────────────────────────────────────────
   // Configuration Summary
   // ─────────────────────────────────────────────────────────────────────────────
+  const localIp = getPrimaryLocalIp();
+  const allLocalIps = getLocalIpAddresses();
+  
   console.log("");
   console.log("┌─────────────────────────────────────────────────────────────────┐");
   console.log("│                      CONFIGURATION                              │");
   console.log("├─────────────────────────────────────────────────────────────────┤");
+  console.log(`│  Local IP:       ${localIp.padEnd(45)}│`);
   console.log(`│  TCP Server:     ${config.tcp.host}:${config.tcp.port.toString().padEnd(37)}│`);
   console.log(`│  HTTP Server:    ${config.http.host}:${config.http.port.toString().padEnd(37)}│`);
   console.log(`│  REST API:       ${config.rest.apiUrl.substring(0, 43).padEnd(43)}│`);
@@ -656,8 +720,9 @@ async function main() {
   console.log("║                                                                   ║");
   console.log("║   ✓ CarniTrack Edge Service READY                                 ║");
   console.log("║                                                                   ║");
-  console.log(`║   📡 Scales connect to:  tcp://${config.tcp.host}:${config.tcp.port}`.padEnd(68) + "║");
-  console.log(`║   🌐 Admin Dashboard:    http://localhost:${config.http.port}`.padEnd(68) + "║");
+  console.log(`║   🖥️  Local IP Address:   ${localIp}`.padEnd(68) + "║");
+  console.log(`║   📡 Scales connect to:  ${localIp}:${config.tcp.port}`.padEnd(68) + "║");
+  console.log(`║   🌐 Admin Dashboard:    http://${localIp}:${config.http.port}`.padEnd(68) + "║");
   console.log(`║   ☁️  Cloud Status:       ${state.cloudConnection.toUpperCase()}`.padEnd(68) + "║");
   console.log("║                                                                   ║");
   if (state.offlineMode) {
@@ -666,6 +731,14 @@ async function main() {
     console.log("║   ✓ ONLINE - Events streaming to Cloud in real-time              ║");
   }
   console.log("║                                                                   ║");
+  // Show all network interfaces if multiple
+  if (allLocalIps.length > 1) {
+    console.log("║   📌 All Network Interfaces:                                      ║");
+    for (const ip of allLocalIps) {
+      console.log(`║      - ${ip}`.padEnd(68) + "║");
+    }
+    console.log("║                                                                   ║");
+  }
   console.log("║   Waiting for scale connections...                                ║");
   console.log("║                                                                   ║");
   console.log("╚═══════════════════════════════════════════════════════════════════╝");
@@ -791,6 +864,10 @@ async function handleApi(req: Request, path: string): Promise<Response> {
         edgeId: state.edgeId,
         siteId: state.siteId,
         siteName: state.siteName,
+        localIp: getPrimaryLocalIp(),
+        allLocalIps: getLocalIpAddresses(),
+        scaleConnectionAddress: `${getPrimaryLocalIp()}:${config.tcp.port}`,
+        dashboardUrl: `http://${getPrimaryLocalIp()}:${config.http.port}`,
         devices: deviceManager.getStatusSummary(),
         activeSessions: getSessionCacheManager().getAllActiveSessions().length,
         pendingOfflineBatches: getOfflineBatchManager().getPendingSyncBatches().length,
