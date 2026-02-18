@@ -93,8 +93,8 @@ const envVars: EnvVar[] = [
   // REST API / Cloud Connection
   {
     name: "CLOUD_API_URL",
-    defaultValue: "https://api.carnitrack.com/api/v1/edge",
-    description: "Cloud API base URL",
+    defaultValue: "https://api.carnitrack.com/api/v1",
+    description: "Cloud API root (no trailing slash, no /edge — Edge appends /edge/... itself)",
     category: "Cloud Connection",
   },
   {

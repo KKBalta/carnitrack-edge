@@ -13,6 +13,7 @@
 
 export {
   RestClient,
+  RestResponseError,
   initRestClient,
   getRestClient,
   destroyRestClient,

@@ -34,7 +34,8 @@ Edit `.env` file with your production settings:
 # Required: Site configuration
 EDGE_NAME="Main Production Facility"
 SITE_ID="site-prod-001"
-CLOUD_API_URL="https://api.carnitrack.com/api/v1/edge"
+# API root only (no trailing slash, no /edge — Edge appends /edge/... itself)
+CLOUD_API_URL="https://api.carnitrack.com/api/v1"
 
 # Optional: Customize ports if needed
 TCP_PORT=8899
@@ -84,7 +85,7 @@ See `.env.example` for all available configuration options.
 | Variable | Description | Required |
 |----------|-------------|----------|
 | `SITE_ID` | Site identifier from Cloud | Yes |
-| `CLOUD_API_URL` | Cloud REST API endpoint | Yes |
+| `CLOUD_API_URL` | Cloud API root (e.g. `https://api.carnitrack.com/api/v1`). No trailing slash, no `/edge` — Edge appends `/edge/...` itself. | Yes |
 | `TCP_PORT` | Port for scale connections | No (default: 8899) |
 | `HTTP_PORT` | Port for admin dashboard | No (default: 3000) |
 

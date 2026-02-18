@@ -6,13 +6,13 @@
  * 
  * Run with: bun run src/cloud/mock-rest-server.ts
  * 
- * Endpoints:
- * - GET  /edge/sessions?device_ids=...  - Get active sessions
- * - POST /edge/events                    - Post single event
- * - POST /edge/events/batch              - Post batch of events
- * - GET  /edge/config                    - Get Edge config
- * - POST /edge/register                  - Register Edge
- * - POST /edge/devices/status            - Device status update
+ * Endpoints (no duplicated /edge/; prefix /api/v1/edge/):
+ * - GET  /api/v1/edge/sessions?device_ids=...
+ * - POST /api/v1/edge/events
+ * - POST /api/v1/edge/events/batch
+ * - GET  /api/v1/edge/config
+ * - POST /api/v1/edge/register
+ * - POST /api/v1/edge/devices/status
  */
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -73,6 +73,11 @@ let eventIdCounter = 0;
 
 function generateId(prefix: string = "cloud"): string {
   return `${prefix}-${Date.now()}-${++eventIdCounter}`;
+}
+
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+function isValidUuid(value: unknown): value is string {
+  return typeof value === "string" && UUID_REGEX.test(value.trim());
 }
 
 function log(message: string, data?: unknown): void {
@@ -229,18 +234,30 @@ async function handlePostEventBatch(req: Request): Promise<Response> {
 async function handlePostRegister(req: Request): Promise<Response> {
   try {
     const body = await req.json() as {
-      edgeId?: string;
+      edgeId?: string | null;
       siteId?: string;
       siteName?: string;
       version: string;
       capabilities: string[];
     };
-    
-    const edgeId = body.edgeId || generateId("edge");
+
     const siteId = body.siteId || "site-001";
     const siteName = body.siteName || "Test Site";
-    
-    // Update lastSeen if edge already exists, otherwise create new entry
+    let edgeId: string;
+
+    if (body.edgeId != null && body.edgeId !== "") {
+      if (!isValidUuid(body.edgeId)) {
+        log(`✗ Register: invalid edgeId format (must be UUID): ${body.edgeId}`);
+        return Response.json(
+          { error: "Invalid edgeId format; must be a valid UUID" },
+          { status: 400 }
+        );
+      }
+      edgeId = body.edgeId;
+    } else {
+      edgeId = crypto.randomUUID();
+    }
+
     const existingEdge = registeredEdges.get(edgeId);
     if (existingEdge) {
       existingEdge.lastSeen = new Date();
@@ -258,7 +275,7 @@ async function handlePostRegister(req: Request): Promise<Response> {
       });
       log(`✓ EDGE REGISTERED: ${edgeId} (${siteName})`);
     }
-    
+
     return Response.json({
       edgeId,
       siteId,
@@ -600,18 +617,18 @@ const server = Bun.serve({
     let response: Response;
     
     try {
-      // Edge API endpoints
-      if (path === "/api/v1/edge/edge/sessions" && method === "GET") {
+      // Edge API endpoints (no duplicated /edge/; prefix /api/v1/edge/)
+      if (path === "/api/v1/edge/sessions" && method === "GET") {
         response = await handleGetSessions(req);
-      } else if (path === "/api/v1/edge/edge/events" && method === "POST") {
+      } else if (path === "/api/v1/edge/events" && method === "POST") {
         response = await handlePostEvent(req);
-      } else if (path === "/api/v1/edge/edge/events/batch" && method === "POST") {
+      } else if (path === "/api/v1/edge/events/batch" && method === "POST") {
         response = await handlePostEventBatch(req);
-      } else if (path === "/api/v1/edge/edge/register" && method === "POST") {
+      } else if (path === "/api/v1/edge/register" && method === "POST") {
         response = await handlePostRegister(req);
-      } else if (path === "/api/v1/edge/edge/config" && method === "GET") {
+      } else if (path === "/api/v1/edge/config" && method === "GET") {
         response = await handleGetConfig(req);
-      } else if (path === "/api/v1/edge/edge/devices/status" && method === "POST") {
+      } else if (path === "/api/v1/edge/devices/status" && method === "POST") {
         response = await handlePostDeviceStatus(req);
       }
       // Admin API endpoints
@@ -1066,7 +1083,7 @@ function getApiTestHtml(): string {
       {
         id: 'get-sessions',
         method: 'GET',
-        path: '/api/v1/edge/edge/sessions',
+        path: '/api/v1/edge/sessions',
         description: 'Get active sessions for devices',
         params: [
           { name: 'device_ids', type: 'query', value: 'SCALE-01,SCALE-02', required: true }
@@ -1075,7 +1092,7 @@ function getApiTestHtml(): string {
       {
         id: 'post-event',
         method: 'POST',
-        path: '/api/v1/edge/edge/events',
+        path: '/api/v1/edge/events',
         description: 'Post a single weighing event',
         body: {
           localEventId: 'evt-' + Date.now(),
@@ -1092,7 +1109,7 @@ function getApiTestHtml(): string {
       {
         id: 'post-event-batch',
         method: 'POST',
-        path: '/api/v1/edge/edge/events/batch',
+        path: '/api/v1/edge/events/batch',
         description: 'Post a batch of events',
         body: {
           events: [
@@ -1120,7 +1137,7 @@ function getApiTestHtml(): string {
       {
         id: 'post-register',
         method: 'POST',
-        path: '/api/v1/edge/edge/register',
+        path: '/api/v1/edge/register',
         description: 'Register Edge with Cloud',
         body: {
           edgeId: null,
@@ -1133,16 +1150,16 @@ function getApiTestHtml(): string {
       {
         id: 'get-config',
         method: 'GET',
-        path: '/api/v1/edge/edge/config',
+        path: '/api/v1/edge/config',
         description: 'Get Edge configuration',
         headers: {
-          'X-Edge-Id': 'edge-test-001'
+          'X-Edge-Id': '550e8400-e29b-41d4-a716-446655440000'
         }
       },
       {
         id: 'post-device-status',
         method: 'POST',
-        path: '/api/v1/edge/edge/devices/status',
+        path: '/api/v1/edge/devices/status',
         description: 'Post device status update',
         body: {
           deviceId: 'SCALE-01',

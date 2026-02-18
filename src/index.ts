@@ -18,7 +18,13 @@
 
 import { networkInterfaces } from "os";
 import { config } from "./config.ts";
-import { initDatabase, closeDatabase, getAllEdgeConfig, setEdgeConfig } from "./storage/database.ts";
+import {
+  initDatabase,
+  closeDatabase,
+  getAllEdgeConfig,
+  setEdgeConfig,
+  deleteEdgeConfig,
+} from "./storage/database.ts";
 import { TCPServer, setGlobalTCPServer } from "./devices/tcp-server.ts";
 import type { SocketMeta } from "./devices/tcp-server.ts";
 import { ScaleParser, getAckResponse } from "./devices/scale-parser.ts";
@@ -30,6 +36,7 @@ import {
   initRestClient, 
   getRestClient, 
   destroyRestClient,
+  RestResponseError,
   initOfflineBatchManager,
   getOfflineBatchManager,
   destroyOfflineBatchManager,
@@ -37,7 +44,8 @@ import {
   getCloudSyncService,
   destroyCloudSyncService,
 } from "./cloud/index.ts";
-import type { CloudConnectionState } from "./types/index.ts";
+import type { CloudConnectionState, EdgeIdentity } from "./types/index.ts";
+import { isValidUuid } from "./utils/uuid.ts";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // RUNTIME STATE
@@ -399,55 +407,120 @@ function handleTCPError(socketId: string, meta: SocketMeta | null, error: Error)
 /**
  * Perform Edge registration with Cloud
  */
-async function performEdgeRegistration(restClient: ReturnType<typeof getRestClient>): Promise<void> {
+function clearStoredEdgeIdentity(): void {
+  deleteEdgeConfig("edge_id");
+  deleteEdgeConfig("site_id");
+  deleteEdgeConfig("site_name");
+  deleteEdgeConfig("registered_at");
+  deleteEdgeConfig("cloud_config");
+
+  state.edgeId = null;
+  state.siteId = null;
+  state.siteName = null;
+}
+
+function getCurrentEdgeIdentity(): EdgeIdentity | null {
+  if (!state.edgeId || !isValidUuid(state.edgeId)) {
+    return null;
+  }
+
+  return {
+    edgeId: state.edgeId,
+    siteId: state.siteId || "",
+    siteName: state.siteName || "",
+    registeredAt: new Date(),
+  };
+}
+
+const MAX_REGISTRATION_ATTEMPTS = 2;
+const REGISTRATION_RETRY_DELAY_MS = 2_000;
+
+async function performEdgeRegistration(
+  restClient: ReturnType<typeof getRestClient>,
+  reason: "startup" | "missing_or_invalid" | "auth_recovery" = "startup"
+): Promise<EdgeIdentity> {
   if (!restClient) {
     throw new Error("REST client not available");
   }
 
-  console.log("[REGISTRATION] Registering Edge with Cloud...");
+  console.log(`[REGISTRATION] Registering Edge with Cloud (reason=${reason})...`);
   if (config.edge.name) {
     console.log(`[REGISTRATION] Edge Name: ${config.edge.name}`);
   }
-  
-  try {
-    const registrationData = {
-      edgeId: state.edgeId || null,
-      siteId: config.edge.siteId || state.siteId || null,
-      siteName: config.edge.name || (config.edge.siteId ? `Site ${config.edge.siteId}` : state.siteName || null),
-      version: "0.3.0",
-      capabilities: ["rest", "tcp"],
-    };
 
-    const response = await restClient.register(registrationData);
-    
-    // Store Edge identity in database
-    setEdgeConfig("edge_id", response.edgeId);
-    setEdgeConfig("site_id", response.siteId);
-    setEdgeConfig("site_name", response.siteName);
-    setEdgeConfig("registered_at", new Date().toISOString());
-    
-    // Update runtime state
-    state.edgeId = response.edgeId;
-    state.siteId = response.siteId;
-    state.siteName = response.siteName;
-    
-    // Update REST client identity
-    restClient.setEdgeIdentity({
-      edgeId: response.edgeId,
-      siteId: response.siteId,
-      siteName: response.siteName,
-      registeredAt: new Date(),
-    });
-    
-    console.log(`[REGISTRATION] ✓ Edge registered successfully:`);
-    console.log(`[REGISTRATION]   Edge ID: ${response.edgeId}`);
-    console.log(`[REGISTRATION]   Site ID: ${response.siteId}`);
-    console.log(`[REGISTRATION]   Site Name: ${response.siteName}`);
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    console.error(`[REGISTRATION] ✗ Registration failed: ${errorMessage}`);
-    throw error;
+  const buildRegistrationPayload = (edgeId: string | null) => ({
+    edgeId,
+    siteId: config.edge.siteId || state.siteId || null,
+    siteName: config.edge.name || (config.edge.siteId ? `Site ${config.edge.siteId}` : state.siteName || null),
+    version: "0.3.0",
+    capabilities: ["rest", "tcp"],
+  });
+
+  let attempt = 0;
+  let lastError: unknown;
+
+  while (attempt < MAX_REGISTRATION_ATTEMPTS) {
+    attempt++;
+    try {
+      const existingEdgeId = state.edgeId && isValidUuid(state.edgeId) ? state.edgeId : null;
+      const registrationData = buildRegistrationPayload(existingEdgeId);
+      const response = await restClient.register(registrationData);
+
+      // Store Edge identity atomically
+      setEdgeConfig("edge_id", response.edgeId);
+      setEdgeConfig("site_id", response.siteId);
+      setEdgeConfig("site_name", response.siteName);
+      setEdgeConfig("registered_at", new Date().toISOString());
+      setEdgeConfig("cloud_config", JSON.stringify(response.config || {}));
+
+      state.edgeId = response.edgeId;
+      state.siteId = response.siteId;
+      state.siteName = response.siteName;
+
+      restClient.setEdgeIdentity({
+        edgeId: response.edgeId,
+        siteId: response.siteId,
+        siteName: response.siteName,
+        registeredAt: new Date(),
+      });
+
+      console.log(`[REGISTRATION] ✓ Edge registered successfully`);
+      console.log(`[REGISTRATION]   Edge ID: ${response.edgeId}`);
+      console.log(`[REGISTRATION]   Endpoint: ${restClient.getEdgeApiBase()}`);
+      console.log(`[REGISTRATION]   Site ID: ${response.siteId}`);
+      console.log(`[REGISTRATION]   Site Name: ${response.siteName}`);
+      return {
+        edgeId: response.edgeId,
+        siteId: response.siteId,
+        siteName: response.siteName,
+        registeredAt: new Date(),
+      };
+    } catch (error) {
+      lastError = error;
+
+      if (error instanceof RestResponseError) {
+        const bodyLower = (error.bodyText || "").toLowerCase();
+        const isInvalidEdgeId = error.status === 400 && (bodyLower.includes("edge") || bodyLower.includes("uuid") || bodyLower.includes("invalid"));
+        const isEdgeNotFound = error.status === 404 || bodyLower.includes("edge not found") || bodyLower.includes("not found");
+
+        if (isInvalidEdgeId || isEdgeNotFound) {
+          console.warn(`[REGISTRATION] Backend ${error.status}: ${error.bodyText?.slice(0, 100) || "—"}. Clearing local edgeId and retrying as first registration.`);
+          clearStoredEdgeIdentity();
+          restClient.clearEdgeIdentity();
+          if (attempt < MAX_REGISTRATION_ATTEMPTS) {
+            await new Promise((r) => setTimeout(r, REGISTRATION_RETRY_DELAY_MS));
+            continue;
+          }
+        }
+      }
+
+      console.error(`[REGISTRATION] ✗ Registration failed (reason=${reason}, attempt=${attempt}): ${error instanceof Error ? error.message : String(error)}`);
+      throw error;
+    }
   }
+
+  console.error(`[REGISTRATION] ✗ Registration failed after ${MAX_REGISTRATION_ATTEMPTS} attempts`);
+  throw lastError;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -473,9 +546,15 @@ async function main() {
   // ─────────────────────────────────────────────────────────────────────────────
   console.log("[INIT] Loading Edge identity...");
   const edgeConfig = getAllEdgeConfig();
-  state.edgeId = edgeConfig.edge_id || null;
+  const storedEdgeId = edgeConfig.edge_id || null;
   state.siteId = edgeConfig.site_id || null;
   state.siteName = edgeConfig.site_name || null;
+  state.edgeId = storedEdgeId;
+
+  if (storedEdgeId && !isValidUuid(storedEdgeId)) {
+    console.warn(`[INIT] ⚠️ Invalid local edgeId detected (${storedEdgeId}). Clearing and re-registering.`);
+    clearStoredEdgeIdentity();
+  }
   
   if (state.edgeId) {
     console.log(`[INIT] ✓ Edge ID: ${state.edgeId}`);
@@ -565,18 +644,48 @@ async function main() {
   // Cloud REST Client Connection
   // ─────────────────────────────────────────────────────────────────────────────
   console.log("[INIT] Initializing Cloud REST client...");
-  
-  const restClient = initRestClient({
+
+  let restClient: ReturnType<typeof initRestClient>;
+  const ensureEdgeIdentity = async (
+    reason: "missing_or_invalid" | "auth_recovery"
+  ): Promise<EdgeIdentity> => {
+    if (reason === "auth_recovery") {
+      console.warn("[REGISTRATION] Backend reported invalid/unknown edge. Clearing local edge identity before re-register.");
+      clearStoredEdgeIdentity();
+      restClient.clearEdgeIdentity();
+    } else if (state.edgeId && !isValidUuid(state.edgeId)) {
+      console.warn(`[REGISTRATION] Invalid local edgeId replaced: ${state.edgeId}`);
+      clearStoredEdgeIdentity();
+      restClient.clearEdgeIdentity();
+    }
+
+    const currentIdentity = getCurrentEdgeIdentity();
+    if (currentIdentity) {
+      return currentIdentity;
+    }
+
+    return performEdgeRegistration(restClient, reason);
+  };
+
+  restClient = initRestClient({
     apiUrl: config.rest.apiUrl,
-    edgeIdentity: state.edgeId ? {
-      edgeId: state.edgeId,
-      siteId: state.siteId || "",
-      siteName: state.siteName || "",
-      registeredAt: new Date(),
-    } : null,
-    autoStart: true,
+    edgeIdentity: getCurrentEdgeIdentity(),
+    ensureEdgeIdentity,
+    autoStart: false,
     queueWhenOffline: true,
   });
+
+  // Bootstrap strict UUID edge identity before normal Cloud activity.
+  if (!state.edgeId || !isValidUuid(state.edgeId)) {
+    try {
+      await ensureEdgeIdentity("missing_or_invalid");
+      console.log("[INIT] ✓ Edge identity bootstrap complete");
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error(`[INIT] Edge identity bootstrap failed: ${msg}`);
+      console.log("[INIT] Continuing startup; registration will retry on Cloud requests.");
+    }
+  }
   
   // Set up REST client event handlers
   const offlineBatchManager = getOfflineBatchManager();
@@ -586,11 +695,11 @@ async function main() {
     state.cloudConnection = "connected";
     state.offlineMode = false;
     
-    // Register Edge if not already registered
-    if (!state.edgeId) {
+    // Register Edge if not already registered or malformed.
+    if (!state.edgeId || !isValidUuid(state.edgeId)) {
       console.log("[CLOUD] Edge not registered, attempting registration...");
       try {
-        await performEdgeRegistration(restClient);
+        await ensureEdgeIdentity("missing_or_invalid");
       } catch (error) {
         console.error("[CLOUD] Registration failed:", error);
       }

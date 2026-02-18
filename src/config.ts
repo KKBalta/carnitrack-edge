@@ -67,8 +67,8 @@ export const config = {
   // HTTP-based communication with Cloud REST API
   // ═══════════════════════════════════════════════════════════════════════════
   rest: {
-    /** Cloud API base URL */
-    apiUrl: process.env.CLOUD_API_URL || "https://api.carnitrack.com/api/v1/edge",
+    /** Cloud API base URL. Can be API root (e.g. .../api/v1) or edge base (.../api/v1/edge); client normalizes to avoid duplicated /edge/ */
+    apiUrl: process.env.CLOUD_API_URL || "https://api.carnitrack.com/api/v1",
     
     /** Session polling interval (ms) */
     sessionPollIntervalMs: Number(process.env.SESSION_POLL_INTERVAL_MS) || 5_000,

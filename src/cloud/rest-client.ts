@@ -15,11 +15,11 @@
  */
 
 import { config } from "../config.ts";
+import { isValidUuid } from "../utils/uuid.ts";
 import type {
   CloudConnectionState,
   EdgeIdentity,
   EventPayload,
-  WeighingEvent,
 } from "../types/index.ts";
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -61,6 +61,15 @@ export interface RestClientOptions {
   
   /** Max queued requests (oldest dropped when exceeded) */
   maxQueueSize?: number;
+
+  /**
+   * Callback used to (re)obtain a valid edge identity.
+   * - missing_or_invalid: local identity missing or malformed before request
+   * - auth_recovery: backend rejected edge identity (invalid/unknown)
+   */
+  ensureEdgeIdentity?: (
+    reason: "missing_or_invalid" | "auth_recovery"
+  ) => Promise<EdgeIdentity>;
 }
 
 /** REST API response for event POST */
@@ -103,6 +112,33 @@ interface QueuedRequest {
   timestamp: Date;
 }
 
+/** Error thrown when REST request fails with HTTP status (e.g. 400/401/404) for contract handling */
+export class RestResponseError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+    public readonly bodyText: string = ""
+  ) {
+    super(message);
+    this.name = "RestResponseError";
+  }
+}
+
+/** Edge API path suffixes (no duplicated /edge/; backend prefix is /api/v1/edge/) */
+const EDGE_PATHS = [
+  "/register",
+  "/sessions",
+  "/events",
+  "/events/batch",
+  "/config",
+  "/devices/status",
+] as const;
+
+function isEdgePath(path: string): boolean {
+  const basePath = path.split("?")[0];
+  return EDGE_PATHS.some((p) => basePath === p || basePath.startsWith(p + "/"));
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // REST CLIENT CLASS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -110,6 +146,7 @@ interface QueuedRequest {
 export class RestClient {
   private apiUrl: string;
   private edgeIdentity: EdgeIdentity | null;
+  private ensureEdgeIdentityHandler?: RestClientOptions["ensureEdgeIdentity"];
   
   // Connection state
   private state: ConnectionStateInfo = {
@@ -128,16 +165,14 @@ export class RestClient {
   // Event listeners
   private eventListeners: Map<RestClientEvent, Set<EventCallback>> = new Map();
   
-  // Request ID counter
-  private requestIdCounter = 0;
-  
   // Online status (based on recent request success)
   private isOnlineFlag: boolean = false;
   private lastSuccessfulRequest: Date | null = null;
   
   constructor(options: RestClientOptions = {}) {
     this.apiUrl = options.apiUrl || config.rest.apiUrl;
-    this.edgeIdentity = options.edgeIdentity || null;
+    this.edgeIdentity = this.normalizeEdgeIdentity(options.edgeIdentity || null);
+    this.ensureEdgeIdentityHandler = options.ensureEdgeIdentity;
     this.queueWhenOffline = options.queueWhenOffline ?? true;
     this.maxQueueSize = options.maxQueueSize ?? 100;
     
@@ -199,7 +234,36 @@ export class RestClient {
    * Update edge identity (for authentication headers)
    */
   setEdgeIdentity(identity: EdgeIdentity): void {
-    this.edgeIdentity = identity;
+    this.edgeIdentity = this.normalizeEdgeIdentity(identity);
+  }
+
+  /**
+   * Clear edge identity in memory (used before re-registration)
+   */
+  clearEdgeIdentity(): void {
+    this.edgeIdentity = null;
+  }
+
+  /**
+   * Base URL for Edge API (exactly one /edge segment: /api/v1/edge).
+   * Normalizes CLOUD_API_URL whether it ends with /api/v1 or /api/v1/edge.
+   */
+  private getEdgeBaseUrl(): string {
+    const base = this.apiUrl.replace(/\/+$/, "").replace(/\/edge\/?$/i, "");
+    return `${base}/edge`;
+  }
+
+  /**
+   * Build full request URL (no duplicated /edge/).
+   */
+  private buildRequestUrl(path: string): string {
+    const base = isEdgePath(path) ? this.getEdgeBaseUrl() : this.apiUrl.replace(/\/+$/, "");
+    return `${base}${path}`;
+  }
+
+  /** Public edge API base URL for logging (e.g. after registration). */
+  getEdgeApiBase(): string {
+    return this.getEdgeBaseUrl();
   }
 
   /**
@@ -207,7 +271,7 @@ export class RestClient {
    */
   private async checkConnection(): Promise<boolean> {
     try {
-      const response = await this.request("GET", "/edge/config", undefined, { timeout: 5000 });
+      const response = await this.request("GET", "/config", undefined, { timeout: 5000 });
       if (response.ok) {
         this.markOnline();
         return true;
@@ -256,9 +320,13 @@ export class RestClient {
     method: string,
     path: string,
     body?: unknown,
-    options: { timeout?: number; skipRetry?: boolean } = {}
+    options: { timeout?: number; skipRetry?: boolean; skipEdgeRecovery?: boolean } = {}
   ): Promise<Response> {
-    const url = `${this.apiUrl}${path}`;
+    if (this.isAuthenticatedEdgePath(path)) {
+      await this.ensureEdgeIdentity("missing_or_invalid");
+    }
+
+    const url = this.buildRequestUrl(path);
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
       "X-Client-Type": "carnitrack-edge",
@@ -266,10 +334,16 @@ export class RestClient {
     };
     
     // Add authentication headers
-    if (this.edgeIdentity?.edgeId) {
+    if (this.isAuthenticatedEdgePath(path)) {
+      if (!this.edgeIdentity?.edgeId || !isValidUuid(this.edgeIdentity.edgeId)) {
+        throw new Error("Missing valid Edge identity for authenticated request");
+      }
       headers["X-Edge-Id"] = this.edgeIdentity.edgeId;
-    }
-    if (this.edgeIdentity?.siteId) {
+      if (this.edgeIdentity.siteId) {
+        headers["X-Site-Id"] = this.edgeIdentity.siteId;
+      }
+    } else if (this.edgeIdentity?.siteId) {
+      // Keep optional site header for non-auth endpoints to preserve behavior.
       headers["X-Site-Id"] = this.edgeIdentity.siteId;
     }
     
@@ -298,11 +372,33 @@ export class RestClient {
           this.markOnline();
           return response;
         }
+
+        // Let register() handle non-2xx so it can throw RestResponseError with status/bodyText
+        if (path === "/register") {
+          this.markOffline();
+          return response;
+        }
+
+        if (
+          !options.skipEdgeRecovery &&
+          this.isAuthenticatedEdgePath(path) &&
+          await this.isInvalidEdgeResponse(response)
+        ) {
+          console.warn(
+            `[REST] Invalid edge identity rejected by backend (${response.status}). Triggering re-register + single retry for ${method} ${path}`
+          );
+          await this.ensureEdgeIdentity("auth_recovery");
+          return this.request(method, path, body, {
+            ...options,
+            skipEdgeRecovery: true,
+          });
+        }
         
         // 4xx errors shouldn't be retried (except 429)
         if (response.status >= 400 && response.status < 500 && response.status !== 429) {
           this.markOffline();
-          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+          lastError = new Error(`HTTP ${response.status}: ${response.statusText}`);
+          break;
         }
         
         // 5xx and 429 should be retried
@@ -336,6 +432,66 @@ export class RestClient {
     
     this.markOffline();
     throw lastError || new Error("Request failed after retries");
+  }
+
+  private normalizeEdgeIdentity(identity: EdgeIdentity | null): EdgeIdentity | null {
+    if (!identity) {
+      return null;
+    }
+    if (!isValidUuid(identity.edgeId)) {
+      console.warn(
+        `[REST] Ignoring malformed edgeId in memory: ${identity.edgeId}`
+      );
+      return null;
+    }
+    return identity;
+  }
+
+  private isAuthenticatedEdgePath(path: string): boolean {
+    return isEdgePath(path) && path !== "/register";
+  }
+
+  private async ensureEdgeIdentity(
+    reason: "missing_or_invalid" | "auth_recovery"
+  ): Promise<void> {
+    if (reason === "missing_or_invalid" && this.edgeIdentity?.edgeId && isValidUuid(this.edgeIdentity.edgeId)) {
+      return;
+    }
+
+    if (!this.ensureEdgeIdentityHandler) {
+      if (reason === "missing_or_invalid") {
+        throw new Error("No edge identity available and no ensureEdgeIdentity handler configured");
+      }
+      return;
+    }
+
+    const identity = await this.ensureEdgeIdentityHandler(reason);
+    this.edgeIdentity = this.normalizeEdgeIdentity(identity);
+    if (!this.edgeIdentity) {
+      throw new Error("ensureEdgeIdentity handler returned invalid edge identity");
+    }
+  }
+
+  private async isInvalidEdgeResponse(response: Response): Promise<boolean> {
+    if (response.status !== 401 && response.status !== 404) {
+      return false;
+    }
+
+    let bodyText = "";
+    try {
+      bodyText = (await response.clone().text()).toLowerCase();
+    } catch {
+      return false;
+    }
+
+    return (
+      bodyText.includes("missing") ||
+      bodyText.includes("invalid edge") ||
+      bodyText.includes("unknown edge") ||
+      bodyText.includes("invalid_edge") ||
+      bodyText.includes("unknown_edge") ||
+      bodyText.includes("x-edge-id")
+    );
   }
 
   /**
@@ -407,6 +563,7 @@ export class RestClient {
 
   /**
    * Register Edge with Cloud
+   * @throws RestResponseError on 4xx/5xx (caller can use status/bodyText for 400/404 recovery)
    */
   async register(registrationData: {
     edgeId?: string | null;
@@ -420,11 +577,21 @@ export class RestClient {
     siteName: string;
     config: Record<string, unknown>;
   }> {
-    const response = await this.request("POST", "/edge/register", registrationData);
+    const response = await this.request("POST", "/register", registrationData);
     if (!response.ok) {
-      throw new Error(`Registration failed: ${response.statusText}`);
+      const bodyText = await response.text();
+      throw new RestResponseError(
+        `Registration failed: ${response.status} ${response.statusText}`,
+        response.status,
+        bodyText
+      );
     }
-    return await response.json();
+    return await response.json() as {
+      edgeId: string;
+      siteId: string;
+      siteName: string;
+      config: Record<string, unknown>;
+    };
   }
 
   /**
@@ -432,11 +599,11 @@ export class RestClient {
    */
   async getSessions(deviceIds: string[]): Promise<SessionsResponse> {
     const deviceIdsParam = deviceIds.join(",");
-    const response = await this.request("GET", `/edge/sessions?device_ids=${deviceIdsParam}`);
+    const response = await this.request("GET", `/sessions?device_ids=${deviceIdsParam}`);
     if (!response.ok) {
       throw new Error(`Get sessions failed: ${response.statusText}`);
     }
-    return await response.json();
+    return await response.json() as SessionsResponse;
   }
 
   /**
@@ -444,17 +611,17 @@ export class RestClient {
    */
   async postEvent(eventPayload: EventPayload): Promise<EventPostResponse> {
     if (!this.isOnline() && this.queueWhenOffline) {
-      return this.queueRequest("POST", "/edge/events", eventPayload) as Promise<EventPostResponse>;
+      return this.queueRequest("POST", "/events", eventPayload) as Promise<EventPostResponse>;
     }
     
-    const response = await this.request("POST", "/edge/events", eventPayload);
+    const response = await this.request("POST", "/events", eventPayload);
     if (!response.ok) {
       if (this.queueWhenOffline) {
-        return this.queueRequest("POST", "/edge/events", eventPayload) as Promise<EventPostResponse>;
+        return this.queueRequest("POST", "/events", eventPayload) as Promise<EventPostResponse>;
       }
       throw new Error(`Post event failed: ${response.statusText}`);
     }
-    return await response.json();
+    return await response.json() as EventPostResponse;
   }
 
   /**
@@ -462,17 +629,17 @@ export class RestClient {
    */
   async postEventBatch(events: EventPayload[]): Promise<BatchPostResponse> {
     if (!this.isOnline() && this.queueWhenOffline) {
-      return this.queueRequest("POST", "/edge/events/batch", { events }) as Promise<BatchPostResponse>;
+      return this.queueRequest("POST", "/events/batch", { events }) as Promise<BatchPostResponse>;
     }
     
-    const response = await this.request("POST", "/edge/events/batch", { events });
+    const response = await this.request("POST", "/events/batch", { events });
     if (!response.ok) {
       if (this.queueWhenOffline) {
-        return this.queueRequest("POST", "/edge/events/batch", { events }) as Promise<BatchPostResponse>;
+        return this.queueRequest("POST", "/events/batch", { events }) as Promise<BatchPostResponse>;
       }
       throw new Error(`Post batch failed: ${response.statusText}`);
     }
-    return await response.json();
+    return await response.json() as BatchPostResponse;
   }
 
   /**
@@ -486,28 +653,28 @@ export class RestClient {
     [key: string]: unknown;
   }): Promise<{ ok: boolean }> {
     if (!this.isOnline() && this.queueWhenOffline) {
-      return this.queueRequest("POST", "/edge/devices/status", statusData) as Promise<{ ok: boolean }>;
+      return this.queueRequest("POST", "/devices/status", statusData) as Promise<{ ok: boolean }>;
     }
     
-    const response = await this.request("POST", "/edge/devices/status", statusData);
+    const response = await this.request("POST", "/devices/status", statusData);
     if (!response.ok) {
       if (this.queueWhenOffline) {
-        return this.queueRequest("POST", "/edge/devices/status", statusData) as Promise<{ ok: boolean }>;
+        return this.queueRequest("POST", "/devices/status", statusData) as Promise<{ ok: boolean }>;
       }
       throw new Error(`Post device status failed: ${response.statusText}`);
     }
-    return await response.json();
+    return await response.json() as { ok: boolean };
   }
 
   /**
    * Get Edge configuration from Cloud
    */
   async getConfig(): Promise<Record<string, unknown>> {
-    const response = await this.request("GET", "/edge/config");
+    const response = await this.request("GET", "/config");
     if (!response.ok) {
       throw new Error(`Get config failed: ${response.statusText}`);
     }
-    return await response.json();
+    return await response.json() as Record<string, unknown>;
   }
 
   // ─────────────────────────────────────────────────────────────────────────────

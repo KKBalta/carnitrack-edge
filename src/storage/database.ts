@@ -355,6 +355,14 @@ export function setEdgeConfig(key: string, value: string): void {
 }
 
 /**
+ * Delete Edge configuration value
+ */
+export function deleteEdgeConfig(key: string): void {
+  const db = getDatabase();
+  db.prepare("DELETE FROM edge_config WHERE key = ?").run(key);
+}
+
+/**
  * Get all Edge configuration
  */
 export function getAllEdgeConfig(): Record<string, string> {
@@ -401,6 +409,7 @@ export default {
   closeDatabase,
   getEdgeConfig,
   setEdgeConfig,
+  deleteEdgeConfig,
   getAllEdgeConfig,
   toSqliteDate,
   fromSqliteDate,
