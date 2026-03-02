@@ -2,14 +2,15 @@
 
 /**
  * CarniTrack Edge - .env File Generator
- * 
- * Generates a .env file with all configurable environment variables
- * based on the config.ts file.
- * 
+ *
+ * Generates a .env file with configurable environment variables.
+ *
  * Usage:
- *   bun scripts/create-env.ts              # Interactive mode
- *   bun scripts/create-env.ts --template  # Generate template only
- *   bun scripts/create-env.ts --output .env.example  # Custom output file
+ *   bun scripts/create-env.ts              # Quick mode: 2 prompts (SITE_ID, EDGE_NAME); REGISTRATION_TOKEN can add later
+ *   bun scripts/create-env.ts --template    # Generate template only (no prompts)
+ *   bun scripts/create-env.ts --full        # Full interactive (all 30+ vars)
+ *   bun scripts/create-env.ts -o .env.local # Custom output file
+ *   bun scripts/create-env.ts -y            # Skip overwrite confirmation
  */
 
 import { existsSync, writeFileSync } from "fs";
@@ -49,9 +50,8 @@ const envVars: EnvVar[] = [
   {
     name: "REGISTRATION_TOKEN",
     defaultValue: "",
-    description: "Site registration token (for initial Cloud registration)",
+    description: "Site registration token (for initial Cloud registration; can add later)",
     category: "Edge Identity",
-    required: true,
   },
   
   // TCP Server
@@ -93,7 +93,7 @@ const envVars: EnvVar[] = [
   // REST API / Cloud Connection
   {
     name: "CLOUD_API_URL",
-    defaultValue: "https://api.carnitrack.com/api/v1",
+    defaultValue: "https://carnitrack-app-1000671720976.europe-west1.run.app/api/v1",
     description: "Cloud API root (no trailing slash, no /edge — Edge appends /edge/... itself)",
     category: "Cloud Connection",
   },
@@ -297,38 +297,78 @@ function generateEnvContent(useDefaults: boolean = false, values?: Map<string, s
   return lines.join("\n");
 }
 
-function readInput(prompt: string, defaultValue: string): string {
-  process.stdout.write(`${prompt} [${defaultValue}]: `);
+/** Essential vars for quick setup (only these are prompted by default; REGISTRATION_TOKEN can be added later) */
+const ESSENTIAL_VAR_NAMES = ["SITE_ID", "EDGE_NAME"];
+
+function createReadline() {
   const readline = require("readline");
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-  
+  return readline.createInterface({ input: process.stdin, output: process.stdout });
+}
+
+function readInput(rl: ReturnType<ReturnType<typeof require>["createInterface"]>, prompt: string, defaultValue: string): Promise<string> {
   return new Promise((resolve) => {
-    rl.once("line", (line: string) => {
-      rl.close();
-      const trimmed = line.trim();
+    rl.question(`${prompt} [${defaultValue || "(empty)"}]: `, (line: string) => {
+      const trimmed = (line || "").trim();
       resolve(trimmed || defaultValue);
     });
   });
 }
 
-async function interactiveMode(): Promise<Map<string, string>> {
+/** Quick mode: prompt only for SITE_ID, REGISTRATION_TOKEN, EDGE_NAME */
+async function quickMode(): Promise<Map<string, string>> {
   const values = new Map<string, string>();
-  
+
+  // Fill from process.env first (enables non-interactive: SITE_ID=x REGISTRATION_TOKEN=y bun scripts/create-env.ts -y)
+  for (const name of ESSENTIAL_VAR_NAMES) {
+    const fromEnv = process.env[name];
+    if (fromEnv !== undefined && fromEnv !== "") {
+      values.set(name, fromEnv);
+    }
+  }
+
+  const needsPrompt = ESSENTIAL_VAR_NAMES.some((name) => !values.has(name));
+  if (needsPrompt) {
+    const rl = createReadline();
+    console.log("\n╔══════════════════════════════════════════════════════════════════════════════╗");
+    console.log("║           CarniTrack Edge - Quick .env Setup (2 questions)                    ║");
+    console.log("╚══════════════════════════════════════════════════════════════════════════════╝");
+    console.log("\nEnter values for Cloud registration. REGISTRATION_TOKEN can be left empty and added later.\n");
+
+    for (const name of ESSENTIAL_VAR_NAMES) {
+      if (values.has(name)) continue;
+      const envVar = envVars.find((v) => v.name === name)!;
+      const value = await readInput(rl, `${envVar.name}${envVar.required ? " (required)" : ""}`, envVar.defaultValue);
+      values.set(name, value);
+    }
+    rl.close();
+  } else {
+    console.log("\n✓ Using SITE_ID, EDGE_NAME from environment.\n");
+  }
+
+  for (const envVar of envVars) {
+    if (!values.has(envVar.name)) {
+      values.set(envVar.name, envVar.defaultValue);
+    }
+  }
+  return values;
+}
+
+/** Full interactive mode: prompt for all vars */
+async function fullInteractiveMode(): Promise<Map<string, string>> {
+  const values = new Map<string, string>();
+  const rl = createReadline();
+
   console.log("\n╔══════════════════════════════════════════════════════════════════════════════╗");
-  console.log("║           CarniTrack Edge - Interactive .env Configuration                    ║");
+  console.log("║           CarniTrack Edge - Full .env Configuration (all vars)               ║");
   console.log("╚══════════════════════════════════════════════════════════════════════════════╝");
-  console.log("\nPress Enter to use default values, or type custom values.\n");
-  
+  console.log("\nPress Enter to use default values.\n");
+
   for (const envVar of envVars) {
     const required = envVar.required ? " (REQUIRED)" : "";
-    const prompt = `${envVar.name}${required}\n  ${envVar.description}`;
-    const value = await readInput(prompt, envVar.defaultValue);
+    const value = await readInput(rl, `${envVar.name}${required}`, envVar.defaultValue);
     values.set(envVar.name, value);
   }
-  
+  rl.close();
   return values;
 }
 
@@ -339,33 +379,40 @@ async function interactiveMode(): Promise<Map<string, string>> {
 async function main() {
   const args = process.argv.slice(2);
   const isTemplate = args.includes("--template") || args.includes("-t");
-  const outputIndex = args.indexOf("--output") || args.indexOf("-o");
-  const outputPath = outputIndex !== -1 && args[outputIndex + 1]
-    ? args[outputIndex + 1]
-    : (isTemplate ? EXAMPLE_ENV_PATH : DEFAULT_ENV_PATH);
-  
+  const isFull = args.includes("--full") || args.includes("-f");
+  const skipConfirm = args.includes("--yes") || args.includes("-y");
+
+  const outputIdx = args.findIndex((a) => a === "--output" || a === "-o");
+  const outputPath =
+    outputIdx >= 0 && args[outputIdx + 1]
+      ? args[outputIdx + 1]
+      : isTemplate
+        ? EXAMPLE_ENV_PATH
+        : DEFAULT_ENV_PATH;
+
   let content: string;
   let values: Map<string, string> | undefined;
-  
+
   if (isTemplate) {
-    // Generate template with defaults commented out
     content = generateEnvContent(true);
     console.log(`✓ Generating .env template at: ${outputPath}`);
   } else {
-    // Interactive mode
-    values = await interactiveMode();
+    values = isFull ? await fullInteractiveMode() : await quickMode();
     content = generateEnvContent(false, values);
     console.log(`\n✓ Generating .env file at: ${outputPath}`);
   }
-  
-  // Check if file exists
-  if (existsSync(outputPath) && !isTemplate) {
-    console.log(`⚠️  Warning: ${outputPath} already exists!`);
-    console.log("   The file will be overwritten.");
-    console.log("   Press Ctrl+C to cancel, or Enter to continue...");
-    await new Promise((resolve) => {
-      process.stdin.once("data", () => resolve(undefined));
+
+  if (existsSync(outputPath) && !isTemplate && !skipConfirm) {
+    console.log(`\n⚠️  ${outputPath} already exists. Overwrite? [y/N] `);
+    const rl = createReadline();
+    const answer = await new Promise<string>((resolve) => {
+      rl.once("line", (line: string) => resolve((line || "").trim().toLowerCase()));
     });
+    rl.close();
+    if (answer !== "y" && answer !== "yes") {
+      console.log("Aborted.");
+      process.exit(0);
+    }
   }
   
   // Write file

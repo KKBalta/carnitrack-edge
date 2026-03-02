@@ -14,6 +14,7 @@
     "dev:all": "bun run mock:cloud & sleep 1 && bun run dev",
     "env:create": "bun scripts/create-env.ts",
     "env:template": "bun scripts/create-env.ts --template",
+    "env:full": "bun scripts/create-env.ts --full",
     "send-scale-event": "bun run scripts/send-scale-event.ts"
   },
   "dependencies": {},
