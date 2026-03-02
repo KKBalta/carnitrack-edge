@@ -214,6 +214,40 @@ Response: { edgeId: "uuid", siteId: "site-01" }
 }
 ```
 
+### Offline Batch ACK (Edge → Cloud)
+
+Edge sends batch metadata after syncing all events in an offline batch; Cloud responds with explicit ACK so Edge does not resend.
+
+**Request:** `POST /api/v1/edge/offline-batches/ack`
+
+```typescript
+{
+  batchId: string;           // UUID of the offline batch
+  deviceId: string;          // "SCALE-01"
+  eventIds: string[];       // Local event IDs in the batch
+  eventCount: number;
+  totalWeightGrams: number;
+  startedAt: string;        // ISO 8601
+  endedAt: string;          // ISO 8601
+}
+```
+
+**Response (200):**
+
+```typescript
+{
+  batchId: string;
+  status: "received" | "already_received";  // Idempotent: same batchId can be ACKed again
+  receivedAt: string;        // ISO 8601
+}
+```
+
+Cloud must return 200 for both first receipt and duplicate ACK (idempotent).
+
+### Idempotency for Events
+
+When processing `POST /events/batch`, Cloud must treat `localEventId` as idempotency key: if an event with the same `localEventId` was already stored, return `{ status: "duplicate", cloudEventId: "<existing>" }` instead of creating a new event. This prevents duplicate events when Edge retries after a lost response.
+
 ## Error Scenarios
 
 ### Duplicate Event
@@ -382,6 +416,17 @@ CREATE TABLE offline_batches (
 - Check events have `offlineBatchId`
 - Verify Cloud processes batch events
 - Check reconciliation logic
+
+---
+
+## Offline Batch ACK (Cloud requirements)
+
+To avoid duplicate events on retries, Edge requires:
+
+1. **`POST /api/v1/edge/offline-batches/ack`** – Edge calls this after syncing a batch; Cloud must return 200 with `status: "received"` or `"already_received"` (idempotent by `batchId`).
+2. **Event batch idempotency** – When processing `POST /events/batch`, treat `localEventId` as idempotency key; for already-stored events return `{ status: "duplicate", cloudEventId: "<existing>" }`.
+
+Full spec and prompt for the Cloud team: **`CLOUD_TEAM_OFFLINE_BATCH_ACK_PROMPT.md`**.
 
 ---
 

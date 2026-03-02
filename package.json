@@ -7,13 +7,14 @@
   "scripts": {
     "dev": "bun run --watch src/index.ts",
     "start": "bun run src/index.ts",
-    "test": "bun test",
+    "test": "DB_PATH=data/carnitrack.test.db bun test",
     "db:setup": "bun run src/storage/setup.ts",
     "typecheck": "tsc --noEmit",
     "mock:cloud": "bun run src/cloud/mock-server.ts",
     "dev:all": "bun run mock:cloud & sleep 1 && bun run dev",
     "env:create": "bun scripts/create-env.ts",
-    "env:template": "bun scripts/create-env.ts --template"
+    "env:template": "bun scripts/create-env.ts --template",
+    "send-scale-event": "bun run scripts/send-scale-event.ts"
   },
   "dependencies": {},
   "devDependencies": {

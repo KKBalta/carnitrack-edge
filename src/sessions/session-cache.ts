@@ -11,6 +11,7 @@
 import { getDatabase } from "../storage/database.ts";
 import { toSqliteDate, fromSqliteDate } from "../storage/database.ts";
 import { config } from "../config.ts";
+import { getSessionPollIntervalMs } from "../cloud/cloud-config.ts";
 import type { SessionCache, SessionStatus } from "../types/index.ts";
 import type { RestClient } from "../cloud/rest-client.ts";
 import type { DeviceManager } from "../devices/device-manager.ts";
@@ -36,7 +37,6 @@ type EventCallback = (session: SessionCache) => void;
 export class SessionCacheManager {
   private eventListeners: Map<SessionCacheEvent, Set<EventCallback>> = new Map();
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
-  private pollTimer: ReturnType<typeof setInterval> | null = null;
   private restClient: RestClient | null = null;
   private deviceManager: DeviceManager | null = null;
 
@@ -59,23 +59,40 @@ export class SessionCacheManager {
     this.deviceManager = manager;
   }
 
+  private pollTimeoutId: ReturnType<typeof setTimeout> | null = null;
+  private pollingActive = false;
+
   /**
-   * Start polling for active sessions from Cloud
+   * Start polling for active sessions from Cloud.
+   * Interval is config-driven (GET /config sessionPollIntervalMs) with fallback to static config.
+   * Uses rescheduling setTimeout so interval can change at runtime without restart.
    */
   startPolling(): void {
-    if (this.pollTimer) {
-      clearInterval(this.pollTimer);
-    }
+    this.stopPolling();
+    this.pollingActive = true;
+    const intervalMs = getSessionPollIntervalMs();
+    console.log(`[SessionCache] Session polling started (interval ${intervalMs}ms, config-driven)`);
 
-    this.pollTimer = setInterval(() => {
-      this.pollSessions().catch(error => {
-        console.error("[SessionCache] Poll error:", error);
-      });
-    }, config.rest.sessionPollIntervalMs);
+    const scheduleNext = (): void => {
+      if (!this.pollingActive) return;
+      this.pollTimeoutId = setTimeout(() => {
+        this.pollTimeoutId = null;
+        if (!this.pollingActive) return;
+        this.pollSessions()
+          .catch(error => {
+            console.error("[SessionCache] Poll error:", error);
+          })
+          .finally(() => {
+            if (this.pollingActive) scheduleNext();
+          });
+      }, getSessionPollIntervalMs());
+    };
 
-    // Poll immediately
+    // Poll immediately then schedule next
     this.pollSessions().catch(error => {
       console.error("[SessionCache] Initial poll error:", error);
+    }).finally(() => {
+      if (this.pollingActive) scheduleNext();
     });
   }
 
@@ -83,23 +100,33 @@ export class SessionCacheManager {
    * Stop polling
    */
   stopPolling(): void {
-    if (this.pollTimer) {
-      clearInterval(this.pollTimer);
-      this.pollTimer = null;
+    this.pollingActive = false;
+    if (this.pollTimeoutId !== null) {
+      clearTimeout(this.pollTimeoutId);
+      this.pollTimeoutId = null;
     }
   }
 
   /**
-   * Poll Cloud for active sessions and update cache
+   * Trigger an immediate session poll (e.g. when a device connects).
+   * Ensures we have the latest session before the first event arrives.
+   */
+  pollNow(): Promise<void> {
+    return this.pollSessions();
+  }
+
+  /**
+   * Poll Cloud for active sessions and update cache.
+   * Builds deviceId -> cloudSessionId/status map; updates device manager; logs mapping changes.
    */
   private async pollSessions(): Promise<void> {
     if (!this.restClient || !this.deviceManager) {
       return;
     }
 
-    // Get all active device IDs
-    const devices = this.deviceManager.getActiveDevices();
-    const deviceIds = devices.map(d => d.deviceId);
+    // Poll all known devices (not only active TCP) so we have session mapping for reconnects
+    const allDevices = this.deviceManager.getAllDevices();
+    const deviceIds = allDevices.map(d => d.deviceId);
 
     if (deviceIds.length === 0) {
       return;
@@ -108,6 +135,23 @@ export class SessionCacheManager {
     try {
       const response = await this.restClient.getSessions(deviceIds);
       const cloudSessions = response.sessions || [];
+
+      if (cloudSessions.length === 0 && deviceIds.length > 0) {
+        console.log(`[SessionCache] Poll returned 0 sessions for devices [${deviceIds.join(", ")}] - create session on Cloud first`);
+      }
+
+      // Build deviceId -> session map for logging and device manager
+      const deviceToSession = new Map<string, { cloudSessionId: string; status: string }>();
+      for (const s of cloudSessions) {
+        deviceToSession.set(s.deviceId, { cloudSessionId: s.cloudSessionId, status: s.status });
+      }
+
+      // Get previous mapping to log changes
+      const previousMapping = new Map<string, string>();
+      for (const d of allDevices) {
+        const sid = this.deviceManager.getActiveSession(d.deviceId);
+        if (sid) previousMapping.set(d.deviceId, sid);
+      }
 
       // Get current cached sessions
       const cachedSessions = this.getAllActiveSessions();
@@ -165,6 +209,28 @@ export class SessionCacheManager {
           this.handleSessionEnd(cached.cloudSessionId, "ended");
         }
       }
+
+      // Update device manager in-memory map: deviceId -> cloudSessionId
+      for (const d of allDevices) {
+        const entry = deviceToSession.get(d.deviceId);
+        this.deviceManager.setActiveSession(d.deviceId, entry?.cloudSessionId ?? null);
+      }
+
+      // Log session poll result and device->session mapping changes
+      const mappingChanges: string[] = [];
+      for (const d of allDevices) {
+        const prev = previousMapping.get(d.deviceId);
+        const next = deviceToSession.get(d.deviceId)?.cloudSessionId ?? null;
+        if (prev !== next) {
+          mappingChanges.push(`${d.deviceId}: ${prev ?? "—"} → ${next ?? "—"}`);
+        }
+      }
+      console.log(
+        `[SessionCache] Poll result: ${cloudSessions.length} session(s) for devices [${deviceIds.join(", ")}]`
+      );
+      if (mappingChanges.length > 0) {
+        console.log(`[SessionCache] Device→session mapping changes: ${mappingChanges.join("; ")}`);
+      }
     } catch (error) {
       console.error("[SessionCache] Failed to poll sessions:", error);
     }
@@ -219,6 +285,7 @@ export class SessionCacheManager {
       toSqliteDate(expiresAt)
     );
 
+    console.log(`[SessionCache] Cached session ${session.cloudSessionId} for device ${session.deviceId}`);
     // Emit event
     this.emit("session:cached", session);
   }
@@ -391,7 +458,7 @@ export class SessionCacheManager {
         expires_at
       FROM active_sessions_cache
       WHERE device_id = ?
-        AND status = 'active'
+        AND status IN ('active', 'pending')
         AND expires_at > ?
       ORDER BY cached_at DESC
       LIMIT 1
@@ -409,6 +476,22 @@ export class SessionCacheManager {
     } | undefined;
 
     if (!row) {
+      // Diagnostic: check if there's a session for this device with a different status or expired
+      const anyRow = db.prepare(`
+        SELECT cloud_session_id, device_id, status, expires_at
+        FROM active_sessions_cache
+        WHERE device_id = ?
+        LIMIT 1
+      `).get(deviceId) as { cloud_session_id: string; device_id: string; status: string; expires_at: string } | undefined;
+
+      if (anyRow) {
+        const expired = anyRow.expires_at <= now;
+        console.warn(
+          `[SessionCache] getActiveSessionForDevice(${deviceId}): no active session found, ` +
+          `but DB has row: id=${anyRow.cloud_session_id} status=${anyRow.status} ` +
+          `expires_at=${anyRow.expires_at} expired=${expired} now=${now}`
+        );
+      }
       return null;
     }
 

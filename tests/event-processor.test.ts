@@ -53,11 +53,26 @@ describe("Event Processor", () => {
     it("should process and store a weighing event", () => {
       const processor = getEventProcessor();
       const db = getDatabase();
+      const sessionCache = require("../src/sessions/session-cache.ts").getSessionCacheManager();
       const restClient = getRestClient();
       
       // Mock REST client as online to prevent offline mode
       const originalIsOnline = restClient!.isOnline.bind(restClient);
       restClient!.isOnline = mock(() => true);
+      
+      // Create active session so event gets cloudSessionId (not offline batch)
+      sessionCache.handleSessionStart({
+        cloudSessionId: "session-test-001",
+        deviceId: "SCALE-01",
+        animalId: null,
+        animalTag: null,
+        animalSpecies: null,
+        operatorId: null,
+        status: "active",
+        cachedAt: new Date(),
+        lastUpdatedAt: null,
+        expiresAt: new Date(Date.now() + 4 * 60 * 60 * 1000),
+      });
       
       const eventData: WeighingEventData = {
         pluCode: "00001",
@@ -217,10 +232,9 @@ describe("Event Processor", () => {
       // Process first event
       const event1 = processor.processWeighingEvent(eventData, "SCALE-01");
       
-      // Try to process duplicate
-      expect(() => {
-        processor.processWeighingEvent(eventData, "SCALE-01");
-      }).toThrow();
+      // Try to process duplicate - returns null (does not throw)
+      const duplicateResult = processor.processWeighingEvent(eventData, "SCALE-01");
+      expect(duplicateResult).toBeNull();
 
       // Verify only one event stored
       const count = db.prepare(`

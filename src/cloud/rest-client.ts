@@ -20,6 +20,8 @@ import type {
   CloudConnectionState,
   EdgeIdentity,
   EventPayload,
+  OfflineBatchAckPayload,
+  OfflineBatchAckResponse,
 } from "../types/index.ts";
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -97,8 +99,26 @@ export interface SessionsResponse {
     animalTag?: string | null;
     animalSpecies?: string | null;
     operatorId?: string | null;
-    status: "active" | "paused";
+    status: "active" | "pending" | "paused";
   }>;
+}
+
+/** Heartbeat device entry for POST /heartbeat */
+export interface HeartbeatDeviceEntry {
+  deviceId: string;
+  globalDeviceId?: string | null;
+  deviceType: string;
+  status: string;
+  lastHeartbeatAt: string;
+  lastEventAt?: string | null;
+}
+
+/** Payload for POST /heartbeat (aggregated connectivity + device status) */
+export interface HeartbeatPayload {
+  version: string;
+  uptimeSec: number;
+  health: "ok" | "degraded" | "error";
+  devices: HeartbeatDeviceEntry[];
 }
 
 /** Queued request */
@@ -130,8 +150,10 @@ const EDGE_PATHS = [
   "/sessions",
   "/events",
   "/events/batch",
+  "/offline-batches/ack",
   "/config",
   "/devices/status",
+  "/heartbeat",
 ] as const;
 
 function isEdgePath(path: string): boolean {
@@ -643,6 +665,24 @@ export class RestClient {
   }
 
   /**
+   * Post offline batch ACK – notify Cloud that a batch was synced and get explicit ACK.
+   */
+  async postOfflineBatchAck(payload: OfflineBatchAckPayload): Promise<OfflineBatchAckResponse> {
+    if (!this.isOnline() && this.queueWhenOffline) {
+      return this.queueRequest("POST", "/offline-batches/ack", payload) as Promise<OfflineBatchAckResponse>;
+    }
+
+    const response = await this.request("POST", "/offline-batches/ack", payload);
+    if (!response.ok) {
+      if (this.queueWhenOffline) {
+        return this.queueRequest("POST", "/offline-batches/ack", payload) as Promise<OfflineBatchAckResponse>;
+      }
+      throw new Error(`Post offline batch ACK failed: ${response.statusText}`);
+    }
+    return await response.json() as OfflineBatchAckResponse;
+  }
+
+  /**
    * Post device status update
    */
   async postDeviceStatus(statusData: {
@@ -675,6 +715,15 @@ export class RestClient {
       throw new Error(`Get config failed: ${response.statusText}`);
     }
     return await response.json() as Record<string, unknown>;
+  }
+
+  /**
+   * POST /heartbeat - Aggregated connectivity and device status (primary endpoint).
+   * Uses X-Edge-Id. On non-2xx, caller should retry with exponential backoff + jitter.
+   */
+  async postHeartbeat(payload: HeartbeatPayload): Promise<Response> {
+    const response = await this.request("POST", "/heartbeat", payload);
+    return response;
   }
 
   // ─────────────────────────────────────────────────────────────────────────────

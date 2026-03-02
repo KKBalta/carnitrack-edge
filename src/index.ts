@@ -43,6 +43,9 @@ import {
   initCloudSyncService,
   getCloudSyncService,
   destroyCloudSyncService,
+  updateCloudConfig,
+  getHeartbeatIntervalMs,
+  type HeartbeatPayload,
 } from "./cloud/index.ts";
 import type { CloudConnectionState, EdgeIdentity } from "./types/index.ts";
 import { isValidUuid } from "./utils/uuid.ts";
@@ -149,21 +152,14 @@ function getPrimaryLocalIp(): string {
 }
 
 /**
- * Check if we're likely running inside a Docker container
+ * Check if we're likely running inside a Docker container (sync .dockerenv check only).
  */
 function isRunningInDocker(): boolean {
-  // Check for /.dockerenv file or cgroup containing docker
   try {
-    const cgroupContent = Bun.file('/proc/1/cgroup').text();
-    return cgroupContent.then(content => content.includes('docker')).catch(() => false);
+    Bun.file("/.dockerenv");
+    return true;
   } catch {
-    // Try checking for .dockerenv
-    try {
-      Bun.file('/.dockerenv');
-      return true;
-    } catch {
-      return false;
-    }
+    return false;
   }
 }
 
@@ -182,7 +178,7 @@ function handleTCPConnection(socketId: string, meta: SocketMeta): void {
  * Handle data received from scale
  * Uses ScaleParser for proper TCP stream buffering and packet parsing
  */
-function handleTCPData(socketId: string, data: Buffer, meta: SocketMeta): void {
+async function handleTCPData(socketId: string, data: Buffer, meta: SocketMeta): Promise<void> {
   // Parse incoming data using the ScaleParser (handles buffering, partial packets)
   const result = scaleParser.parse(socketId, data);
   
@@ -191,16 +187,16 @@ function handleTCPData(socketId: string, data: Buffer, meta: SocketMeta): void {
     console.warn(`[TCP] Parse error: ${error.reason} on line ${error.index}: ${error.line}`);
   }
   
-  // Process each parsed packet
+  // Process each parsed packet (await so registration's poll completes before event)
   for (const packet of result.packets) {
-    handleParsedPacket(socketId, packet, meta);
+    await handleParsedPacket(socketId, packet, meta);
   }
 }
 
 /**
  * Handle a single parsed packet from the scale
  */
-function handleParsedPacket(socketId: string, packet: ParsedPacket, meta: SocketMeta): void {
+async function handleParsedPacket(socketId: string, packet: ParsedPacket, meta: SocketMeta): Promise<void> {
   const deviceManager = getDeviceManager();
   
   switch (packet.type) {
@@ -223,8 +219,24 @@ function handleParsedPacket(socketId: string, packet: ParsedPacket, meta: Socket
         sourceIp: meta.remoteAddress,
       });
       
-      console.log(`[TCP] ✓ Device registered: ${deviceId} (scale #${scaleNumber}) from ${meta.remoteAddress}`);
-      console.log(`[TCP]    Global ID: ${device.globalDeviceId}`);
+      console.log(
+        `[TCP] ✓ Device connected (deviceId=${deviceId}, edgeId=${state.edgeId ?? "—"}, globalId=${device.globalDeviceId ?? "—"}) from ${meta.remoteAddress}`
+      );
+      
+      // Poll sessions immediately so we have the latest session before the first event arrives
+      // (send-scale-event sends registration + event in quick succession)
+      const sessionCache = getSessionCacheManager();
+      try {
+        await sessionCache.pollNow();
+        const sessionAfterPoll = sessionCache.getActiveSessionForDevice(deviceId);
+        if (sessionAfterPoll) {
+          console.log(`[TCP]    Session cached for ${deviceId}: ${sessionAfterPoll.cloudSessionId}`);
+        } else {
+          console.log(`[TCP]    No session found for ${deviceId} after poll (create session on Cloud first)`);
+        }
+      } catch (err) {
+        console.warn("[TCP] Immediate session poll failed:", err);
+      }
       
       // Notify Cloud via REST API (device_connected)
       const restClient = getRestClient();
@@ -243,7 +255,6 @@ function handleParsedPacket(socketId: string, packet: ParsedPacket, meta: Socket
       }
       
       // Check for active session in cache
-      const sessionCache = getSessionCacheManager();
       const activeSession = sessionCache.getActiveSessionForDevice(deviceId);
       if (activeSession) {
         console.log(`[TCP]    Active session: ${activeSession.cloudSessionId}`);
@@ -327,13 +338,9 @@ function handleParsedPacket(socketId: string, packet: ParsedPacket, meta: Socket
         break;
       }
       
-      console.log(`[TCP]    Event stored: ${processedEvent.id}`);
-      if (processedEvent.cloudSessionId) {
-        console.log(`[TCP]    Tagged with session: ${processedEvent.cloudSessionId}`);
-      }
-      if (processedEvent.offlineBatchId) {
-        console.log(`[TCP]    Tagged with offline batch: ${processedEvent.offlineBatchId}`);
-      }
+      console.log(
+        `[TCP] Event stored (localEventId=${processedEvent.id}, deviceId=${deviceId}, cloudSessionId=${processedEvent.cloudSessionId ?? "—"}, offlineBatchId=${processedEvent.offlineBatchId ?? "—"})`
+      );
       
       // Event Processor emits "event:captured" which CloudSyncService listens to
       // CloudSyncService will automatically stream the event if Cloud is connected
@@ -366,7 +373,7 @@ function handleTCPDisconnect(socketId: string, meta: SocketMeta, reason: string)
   const device = deviceManager.getDeviceBySocketId(socketId);
   const deviceId = device?.deviceId || meta.deviceId || socketId;
   
-  console.log(`[TCP] Connection closed: ${deviceId} - ${reason}`);
+  console.log(`[TCP] Device disconnected (deviceId=${deviceId}, reason=${reason}, edgeId=${state.edgeId ?? "—"})`);
   
   // Clear parser buffer for this socket
   scaleParser.clearBuffer(socketId);
@@ -472,6 +479,7 @@ async function performEdgeRegistration(
       setEdgeConfig("site_name", response.siteName);
       setEdgeConfig("registered_at", new Date().toISOString());
       setEdgeConfig("cloud_config", JSON.stringify(response.config || {}));
+      updateCloudConfig((response.config as Record<string, unknown>) || {});
 
       state.edgeId = response.edgeId;
       state.siteId = response.siteId;
@@ -484,11 +492,9 @@ async function performEdgeRegistration(
         registeredAt: new Date(),
       });
 
-      console.log(`[REGISTRATION] ✓ Edge registered successfully`);
-      console.log(`[REGISTRATION]   Edge ID: ${response.edgeId}`);
+      console.log(`[REGISTRATION] ✓ Edge registered successfully (edgeId=${response.edgeId})`);
       console.log(`[REGISTRATION]   Endpoint: ${restClient.getEdgeApiBase()}`);
-      console.log(`[REGISTRATION]   Site ID: ${response.siteId}`);
-      console.log(`[REGISTRATION]   Site Name: ${response.siteName}`);
+      console.log(`[REGISTRATION]   Site: ${response.siteId} / ${response.siteName}`);
       return {
         edgeId: response.edgeId,
         siteId: response.siteId,
@@ -514,7 +520,7 @@ async function performEdgeRegistration(
         }
       }
 
-      console.error(`[REGISTRATION] ✗ Registration failed (reason=${reason}, attempt=${attempt}): ${error instanceof Error ? error.message : String(error)}`);
+      console.error(`[REGISTRATION] ✗ Registration failed (reason=${reason}, attempt=${attempt}, edgeId=${state.edgeId ?? "—"}): ${error instanceof Error ? error.message : String(error)}`);
       throw error;
     }
   }
@@ -705,6 +711,14 @@ async function main() {
       }
     }
     
+    // Refresh runtime config from Cloud (sessionPollIntervalMs, heartbeatIntervalMs, etc.)
+    try {
+      const cloudConfig = await restClient.getConfig();
+      updateCloudConfig(cloudConfig as Record<string, unknown>);
+    } catch (err) {
+      // Non-fatal; we keep previous config
+    }
+    
     // End any active offline batches when Cloud reconnects
     const activeBatches = offlineBatchManager.getActiveBatches();
     for (const batch of activeBatches) {
@@ -752,7 +766,9 @@ async function main() {
   sessionCache.setRestClient(restClient);
   sessionCache.setDeviceManager(deviceManager);
   sessionCache.startPolling();
-  console.log(`[INIT] ✓ Session polling started (every ${config.rest.sessionPollIntervalMs / 1000}s)`);
+  
+  // Start aggregated heartbeat loop (POST /heartbeat)
+  startAggregatedHeartbeatLoop();
   
   // Start connection check
   console.log(`[CLOUD] REST API URL: ${config.rest.apiUrl}`);
@@ -868,7 +884,111 @@ async function main() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// HEARTBEAT MONITOR
+// AGGREGATED HEARTBEAT (POST /heartbeat)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const EDGE_VERSION = "0.3.0";
+const HEARTBEAT_MAX_RETRIES = 5;
+const HEARTBEAT_BASE_DELAY_MS = 1000;
+const HEARTBEAT_JITTER_FRACTION = 0.2;
+
+let aggregatedHeartbeatTimeoutId: ReturnType<typeof setTimeout> | null = null;
+let aggregatedHeartbeatActive = false;
+
+function computeHealth(): "ok" | "degraded" | "error" {
+  const restClient = getRestClient();
+  if (!restClient?.isOnline()) return "error";
+  const deviceManager = getDeviceManager();
+  const all = deviceManager.getAllDevices();
+  const disconnected = all.filter(d => d.status === "disconnected").length;
+  const stale = all.filter(d => d.status === "stale").length;
+  if (disconnected === all.length && all.length > 0) return "error";
+  if (stale > 0 || disconnected > 0) return "degraded";
+  return "ok";
+}
+
+function buildHeartbeatPayload(): HeartbeatPayload {
+  const deviceManager = getDeviceManager();
+  const devices = deviceManager.getAllDevices();
+  const uptimeSec = Math.floor((Date.now() - state.startedAt.getTime()) / 1000);
+  return {
+    version: EDGE_VERSION,
+    uptimeSec,
+    health: computeHealth(),
+    devices: devices.map(d => ({
+      deviceId: d.deviceId,
+      globalDeviceId: d.globalDeviceId ?? undefined,
+      deviceType: d.deviceType,
+      status: d.status,
+      lastHeartbeatAt: d.lastHeartbeatAt?.toISOString() ?? new Date(0).toISOString(),
+      lastEventAt: d.lastEventAt?.toISOString() ?? undefined,
+    })),
+  };
+}
+
+async function sendAggregatedHeartbeat(): Promise<boolean> {
+  const restClient = getRestClient();
+  if (!restClient || !state.edgeId || !isValidUuid(state.edgeId)) {
+    return false;
+  }
+  const payload = buildHeartbeatPayload();
+  try {
+    const response = await restClient.postHeartbeat(payload);
+    if (response.ok) {
+      console.log(
+        `[HEARTBEAT] ✓ POST /heartbeat ok (edgeId=${state.edgeId}, devices=${payload.devices.length}, health=${payload.health})`
+      );
+      return true;
+    }
+    return false;
+  } catch (err) {
+    console.warn(
+      `[HEARTBEAT] ✗ POST /heartbeat failed (edgeId=${state.edgeId}): ${err instanceof Error ? err.message : String(err)}`
+    );
+    return false;
+  }
+}
+
+function scheduleNextAggregatedHeartbeat(): void {
+  if (!aggregatedHeartbeatActive) return;
+  const intervalMs = getHeartbeatIntervalMs();
+  aggregatedHeartbeatTimeoutId = setTimeout(async () => {
+    aggregatedHeartbeatTimeoutId = null;
+    if (!aggregatedHeartbeatActive) return;
+    let success = await sendAggregatedHeartbeat();
+    let retries = 0;
+    while (!success && retries < HEARTBEAT_MAX_RETRIES && aggregatedHeartbeatActive) {
+      const baseDelay = HEARTBEAT_BASE_DELAY_MS * Math.pow(2, retries);
+      const jitter = baseDelay * HEARTBEAT_JITTER_FRACTION * (2 * Math.random() - 1);
+      const delay = Math.max(0, Math.round(baseDelay + jitter));
+      await new Promise(r => setTimeout(r, delay));
+      retries++;
+      success = await sendAggregatedHeartbeat();
+    }
+    if (aggregatedHeartbeatActive) {
+      scheduleNextAggregatedHeartbeat();
+    }
+  }, intervalMs);
+}
+
+function startAggregatedHeartbeatLoop(): void {
+  stopAggregatedHeartbeatLoop();
+  aggregatedHeartbeatActive = true;
+  const intervalMs = getHeartbeatIntervalMs();
+  console.log(`[HEARTBEAT] Aggregated heartbeat loop started (interval ${intervalMs}ms, config-driven)`);
+  scheduleNextAggregatedHeartbeat();
+}
+
+function stopAggregatedHeartbeatLoop(): void {
+  aggregatedHeartbeatActive = false;
+  if (aggregatedHeartbeatTimeoutId !== null) {
+    clearTimeout(aggregatedHeartbeatTimeoutId);
+    aggregatedHeartbeatTimeoutId = null;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// HEARTBEAT MONITOR (device TCP heartbeat timeout)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 let heartbeatIntervalId: ReturnType<typeof setInterval> | null = null;
@@ -916,6 +1036,9 @@ function stopHeartbeatMonitor(): void {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 async function shutdown(): Promise<void> {
+  console.log("[SHUTDOWN] Stopping aggregated heartbeat loop...");
+  stopAggregatedHeartbeatLoop();
+  
   console.log("[SHUTDOWN] Stopping heartbeat monitor...");
   stopHeartbeatMonitor();
   

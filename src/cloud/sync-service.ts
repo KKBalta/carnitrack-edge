@@ -40,6 +40,9 @@ interface SyncConfig {
   backlogSyncDelay: number;
 }
 
+/** Events in "streaming" longer than this are reset to "pending" for retry */
+const STUCK_STREAMING_MS = 5 * 60 * 1000; // 5 minutes
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // CLOUD SYNC SERVICE CLASS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -232,13 +235,19 @@ export class CloudSyncService {
       // Post via REST API
       const response = await restClient.postEvent(payload);
       
-      // Mark as synced
+      // Mark as synced and log
       eventProcessor.markEventSynced(event.id, response.cloudEventId);
+      console.log(
+        `[SyncService] Event ${response.status} (localEventId=${event.id}, cloudEventId=${response.cloudEventId}, deviceId=${event.deviceId}, cloudSessionId=${event.cloudSessionId ?? "—"})`
+      );
       return true;
     } catch (error) {
       // Failed to post, mark as failed
       const errorMessage = error instanceof Error ? error.message : String(error);
       eventProcessor.markEventFailed(event.id, `REST POST failed: ${errorMessage}`);
+      console.warn(
+        `[SyncService] Event failed (localEventId=${event.id}, deviceId=${event.deviceId}): ${errorMessage}`
+      );
       return false;
     }
   }
@@ -345,16 +354,81 @@ export class CloudSyncService {
     try {
       // Post batch via REST API
       const response = await restClient.postEventBatch(payloads);
-      
-      // Process results
+
+      // Validate batch response – require one result per event to avoid stuck "streaming"
+      if (!response?.results || response.results.length !== events.length) {
+        console.warn(
+          `[SyncService] Batch response incomplete (got ${response?.results?.length ?? 0}, expected ${events.length}), will retry`
+        );
+        events.forEach(event => {
+          eventProcessor.markEventFailed(event.id, "Batch response incomplete");
+        });
+        return false;
+      }
+
+      const resultIds = new Set<string>();
+      let accepted = 0;
+      let duplicate = 0;
+      let failed = 0;
       for (const result of response.results) {
-        if (result.status === "accepted" || result.status === "duplicate") {
+        resultIds.add(result.localEventId);
+        if (result.status === "accepted") {
+          accepted++;
+          eventProcessor.markEventSynced(result.localEventId, result.cloudEventId);
+        } else if (result.status === "duplicate") {
+          duplicate++;
           eventProcessor.markEventSynced(result.localEventId, result.cloudEventId);
         } else {
+          failed++;
           eventProcessor.markEventFailed(result.localEventId, result.error || "Batch post failed");
         }
       }
-      
+      for (const event of events) {
+        if (!resultIds.has(event.id)) {
+          eventProcessor.markEventFailed(event.id, "Missing from batch response");
+          failed++;
+        }
+      }
+      console.log(
+        `[SyncService] Batch result: accepted=${accepted}, duplicate=${duplicate}, failed=${failed} (${payloads.length} events)`
+      );
+
+      // Offline batch ACK: for batches whose events are all synced, notify Cloud and mark reconciled
+      const offlineBatchManager = getOfflineBatchManager();
+      const syncedBatchIds = new Set(
+        events
+          .filter(e => e.offlineBatchId && (response.results.find(r => r.localEventId === e.id)?.status === "accepted" || response.results.find(r => r.localEventId === e.id)?.status === "duplicate"))
+          .map(e => e.offlineBatchId!)
+      );
+      for (const batchId of syncedBatchIds) {
+        const batch = offlineBatchManager.getBatch(batchId);
+        if (!batch) continue;
+        const batchEvents = eventProcessor.getEventsByBatch(batchId);
+        const allSynced = batchEvents.length > 0 && batchEvents.every(e => e.syncStatus === "synced");
+        if (!allSynced) continue;
+
+        if (config.offline.offlineBatchAckRequired) {
+          try {
+            await restClient.postOfflineBatchAck({
+              batchId,
+              deviceId: batch.deviceId,
+              eventIds: batchEvents.map(e => e.id),
+              eventCount: batch.eventCount,
+              totalWeightGrams: batch.totalWeightGrams,
+              startedAt: batch.startedAt.toISOString(),
+              endedAt: (batch.endedAt ?? new Date()).toISOString(),
+            });
+            offlineBatchManager.markBatchSynced(batchId);
+          } catch (ackError) {
+            const msg = ackError instanceof Error ? ackError.message : String(ackError);
+            console.warn(`[SyncService] Offline batch ACK failed for ${batchId}, falling back to mark synced: ${msg}`);
+            offlineBatchManager.markBatchSynced(batchId);
+          }
+        } else {
+          offlineBatchManager.markBatchSynced(batchId);
+        }
+      }
+
       return true;
     } catch (error) {
       // Failed to post batch
@@ -491,6 +565,11 @@ export class CloudSyncService {
 
     this.batchTimer = setInterval(() => {
       if (this.isRunning) {
+        const eventProcessor = getEventProcessor();
+        const reset = eventProcessor.resetStuckStreamingEvents(STUCK_STREAMING_MS);
+        if (reset > 0) {
+          console.log(`[SyncService] Reset ${reset} stuck streaming event(s) to pending for retry`);
+        }
         this.syncPendingEvents().catch(error => {
           console.error("[SyncService] Error in batch sync:", error);
         });

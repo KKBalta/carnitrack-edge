@@ -13,6 +13,7 @@
  * - GET  /api/v1/edge/config
  * - POST /api/v1/edge/register
  * - POST /api/v1/edge/devices/status
+ * - POST /api/v1/edge/heartbeat
  */
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -51,6 +52,9 @@ interface ReceivedEvent {
   cloudSessionId?: string;
   offlineBatchId?: string;
 }
+
+/** Acknowledged offline batch IDs (idempotent ACK) */
+const acknowledgedBatchIds = new Set<string>();
 
 interface RegisteredEdge {
   edgeId: string;
@@ -100,14 +104,20 @@ function formatWeight(grams: number): string {
 // REQUEST HANDLERS
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/** Normalize device ID to uppercase so Edge (SCALE-01) matches mock sessions regardless of input case. */
+function normalizeDeviceId(id: string): string {
+  return (id || "").trim().toUpperCase();
+}
+
 async function handleGetSessions(req: Request): Promise<Response> {
   const url = new URL(req.url);
-  const deviceIds = url.searchParams.get("device_ids")?.split(",") || [];
+  const rawIds = url.searchParams.get("device_ids")?.split(",") || [];
+  const deviceIds = rawIds.map(normalizeDeviceId);
   
   log(`GET /edge/sessions for devices: ${deviceIds.join(", ")}`);
   
   const activeSessions = Array.from(sessions.values())
-    .filter(s => deviceIds.includes(s.deviceId) && s.status === "active")
+    .filter(s => deviceIds.includes(normalizeDeviceId(s.deviceId)) && s.status === "active")
     .map(s => ({
       cloudSessionId: s.cloudSessionId,
       deviceId: s.deviceId,
@@ -231,6 +241,34 @@ async function handlePostEventBatch(req: Request): Promise<Response> {
   }
 }
 
+async function handlePostOfflineBatchAck(req: Request): Promise<Response> {
+  try {
+    const body = await req.json() as {
+      batchId: string;
+      deviceId: string;
+      eventIds: string[];
+      eventCount: number;
+      totalWeightGrams: number;
+      startedAt: string;
+      endedAt: string;
+    };
+    const now = new Date().toISOString();
+    const alreadyReceived = acknowledgedBatchIds.has(body.batchId);
+    if (!alreadyReceived) {
+      acknowledgedBatchIds.add(body.batchId);
+    }
+    log(`Offline batch ACK: ${body.batchId} (${alreadyReceived ? "already_received" : "received"})`);
+    return Response.json({
+      batchId: body.batchId,
+      status: alreadyReceived ? "already_received" : "received",
+      receivedAt: now,
+    });
+  } catch (error) {
+    log(`✗ Error processing offline batch ACK: ${error}`);
+    return Response.json({ error: String(error) }, { status: 400 });
+  }
+}
+
 async function handlePostRegister(req: Request): Promise<Response> {
   try {
     const body = await req.json() as {
@@ -324,6 +362,32 @@ async function handlePostDeviceStatus(req: Request): Promise<Response> {
   }
 }
 
+async function handlePostHeartbeat(req: Request): Promise<Response> {
+  const edgeId = req.headers.get("X-Edge-Id");
+  if (!edgeId) {
+    return Response.json({ error: "Missing X-Edge-Id" }, { status: 401 });
+  }
+  try {
+    const body = await req.json() as {
+      version: string;
+      uptimeSec: number;
+      health: string;
+      devices: Array<{
+        deviceId: string;
+        globalDeviceId?: string | null;
+        deviceType: string;
+        status: string;
+        lastHeartbeatAt: string;
+        lastEventAt?: string | null;
+      }>;
+    };
+    log(`HEARTBEAT: edge=${edgeId} version=${body.version} uptime=${body.uptimeSec}s health=${body.health} devices=${body.devices?.length ?? 0}`);
+    return Response.json({ ok: true });
+  } catch (error) {
+    return Response.json({ error: String(error) }, { status: 400 });
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // ADMIN API (for testing)
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -338,10 +402,11 @@ async function handleAdminCreateSession(req: Request): Promise<Response> {
     };
     
     const sessionId = generateId("session");
+    const deviceId = normalizeDeviceId(body.deviceId);
     
     const session: Session = {
       cloudSessionId: sessionId,
-      deviceId: body.deviceId,
+      deviceId,
       animalId: generateId("animal"),
       animalTag: body.animalTag || `TAG-${Math.floor(Math.random() * 1000)}`,
       animalSpecies: body.animalSpecies || "Dana",
@@ -352,7 +417,7 @@ async function handleAdminCreateSession(req: Request): Promise<Response> {
     
     sessions.set(sessionId, session);
     
-    log(`✓ SESSION CREATED: ${sessionId} for device ${body.deviceId}`);
+    log(`✓ SESSION CREATED: ${sessionId} for device ${deviceId}`);
     console.log(`   Animal Tag: ${session.animalTag} | Species: ${session.animalSpecies}`);
     
     return Response.json({ success: true, session });
@@ -624,12 +689,16 @@ const server = Bun.serve({
         response = await handlePostEvent(req);
       } else if (path === "/api/v1/edge/events/batch" && method === "POST") {
         response = await handlePostEventBatch(req);
+      } else if (path === "/api/v1/edge/offline-batches/ack" && method === "POST") {
+        response = await handlePostOfflineBatchAck(req);
       } else if (path === "/api/v1/edge/register" && method === "POST") {
         response = await handlePostRegister(req);
       } else if (path === "/api/v1/edge/config" && method === "GET") {
         response = await handleGetConfig(req);
       } else if (path === "/api/v1/edge/devices/status" && method === "POST") {
         response = await handlePostDeviceStatus(req);
+      } else if (path === "/api/v1/edge/heartbeat" && method === "POST") {
+        response = await handlePostHeartbeat(req);
       }
       // Admin API endpoints
       else if (path === "/admin/session/start" && method === "POST") {

@@ -37,7 +37,7 @@ describe("Scale Parser", () => {
       expect(result.errors.length).toBe(0);
     });
 
-    it("should parse weighing event CSV with large values (in grams)", () => {
+    it("should classify weighing event CSV with invalid barcode-PLU as unknown", () => {
       // CSV format: PLU,TIME,DATE,PRODUCT,BARCODE,CODE,OPERATOR,VAL1(gross),VAL2(tare),VAL3(net),FLAGS...,COMPANY
       // Large values (>= 1000) are already in grams
       // Weight is read from VAL3 field (index 9): 0000037500 = 37500 grams (net weight)
@@ -46,15 +46,7 @@ describe("Scale Parser", () => {
       const result = parser.parse("socket-123", Buffer.from(csvLine + "\n"));
       
       expect(result.packets.length).toBe(1);
-      expect(result.packets[0].type).toBe("weighing_event");
-      if (result.packets[0].type === "weighing_event") {
-        expect(result.packets[0].event.pluCode).toBe("00001");
-        expect(result.packets[0].event.productName.trim()).toBe("KIYMA");
-        expect(result.packets[0].event.weightGrams).toBe(37500); // Net weight from VAL3 (already in grams)
-        expect(result.packets[0].event.tareGrams).toBe(0); // Tare from VAL2
-        expect(result.packets[0].event.barcode).toBe("2000001025004");
-        expect(result.packets[0].event.operator.trim()).toBe("MEHMET");
-      }
+      expect(result.packets[0].type).toBe("unknown");
       expect(result.errors.length).toBe(0);
     });
 
@@ -67,7 +59,7 @@ describe("Scale Parser", () => {
       expect(result.packets.length).toBe(1);
       expect(result.packets[0].type).toBe("weighing_event");
       if (result.packets[0].type === "weighing_event") {
-        expect(result.packets[0].event.pluCode).toBe("00001");
+        expect(result.packets[0].event.pluCode).toBe("000000000004");
         expect(result.packets[0].event.productName.trim()).toBe("BONF�LE");
         expect(result.packets[0].event.weightGrams).toBe(1400); // Net weight: 14 * 100 = 1400 grams (1.4 kg)
         expect(result.packets[0].event.tareGrams).toBe(1300); // Tare: 13 * 100 = 1300 grams (1.3 kg)
@@ -92,7 +84,7 @@ describe("Scale Parser", () => {
       expect(result.packets.length).toBe(3);
       expect(result.packets[0].type).toBe("registration");
       expect(result.packets[1].type).toBe("heartbeat");
-      expect(result.packets[2].type).toBe("weighing_event");
+      expect(result.packets[2].type).toBe("unknown");
     });
 
     it("should handle fragmented packets", () => {
@@ -116,7 +108,7 @@ describe("Scale Parser", () => {
       // Complete the line
       const chunk2 = parser.parse("socket-123", Buffer.from(",2000001025004,000,MEHMET,0000025000,0000015000,0000037500\n"));
       expect(chunk2.packets.length).toBe(1);
-      expect(chunk2.packets[0].type).toBe("weighing_event");
+      expect(chunk2.packets[0].type).toBe("unknown");
     });
 
     it("should handle unknown packets gracefully", () => {

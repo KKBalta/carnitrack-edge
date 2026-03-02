@@ -12,6 +12,7 @@ import { toSqliteDate, fromSqliteDate, generateId } from "../storage/database.ts
 import { getSessionCacheManager } from "../sessions/session-cache.ts";
 import { getOfflineBatchManager } from "../cloud/offline-batch-manager.ts";
 import { getRestClient } from "../cloud/index.ts";
+import { getDeviceManager } from "./device-manager.ts";
 import type { WeighingEvent, ParsedScaleEvent, EventSyncStatus } from "../types/index.ts";
 import type { WeighingEventData } from "./scale-parser.ts";
 
@@ -96,22 +97,41 @@ export class EventProcessor {
     // Generate event ID
     const eventId = generateId();
 
-    // Determine session and offline mode
-    const session = sessionCache.getActiveSessionForDevice(deviceId);
+    // Determine session: try SQLite cache first, then fall back to device manager's in-memory map.
+    // The device manager map is updated every poll cycle and is more resilient to SQLite query
+    // mismatches (e.g., stale status, expiry edge cases).
+    let session = sessionCache.getActiveSessionForDevice(deviceId);
+    let cloudSessionId: string | null = session?.cloudSessionId ?? null;
+
+    if (!cloudSessionId) {
+      const dmSessionId = getDeviceManager().getActiveSession(deviceId);
+      if (dmSessionId) {
+        cloudSessionId = dmSessionId;
+        session = sessionCache.getSessionById(dmSessionId) ?? session;
+        console.log(
+          `[EventProcessor] SQLite cache miss, resolved via DeviceManager: deviceId=${deviceId} cloudSessionId=${dmSessionId}`
+        );
+      }
+    }
+
     const cloudConnected = restClient?.isOnline() ?? false;
-    const offlineMode = !cloudConnected;
+    const noSessionForDevice = !cloudSessionId;
+    const offlineMode = !cloudConnected || noSessionForDevice;
+
+    if (noSessionForDevice || !cloudConnected) {
+      console.log(
+        `[EventProcessor] Session lookup: deviceId=${deviceId} session=${cloudSessionId ?? "—"} cloudOnline=${cloudConnected} → offlineMode=${offlineMode}`
+      );
+    }
     
-    // Get or create offline batch if needed
+    // Get or create offline batch when offline (cloud down) or when no session for this device
     let offlineBatchId: string | null = null;
     if (offlineMode) {
       let currentBatch = offlineBatchManager.getCurrentBatch();
       if (!currentBatch) {
-        // Start new batch for this device
         currentBatch = offlineBatchManager.startBatch(deviceId);
       }
       offlineBatchId = currentBatch.id;
-      
-      // Increment batch event count
       offlineBatchManager.incrementEventCount(offlineBatchId, parsedEvent.weightGrams);
     }
 
@@ -119,7 +139,7 @@ export class EventProcessor {
     const event: WeighingEvent = {
       id: eventId,
       deviceId,
-      cloudSessionId: session?.cloudSessionId ?? null,
+      cloudSessionId,
       offlineMode,
       offlineBatchId,
       pluCode: parsedEvent.pluCode,
@@ -616,6 +636,94 @@ export class EventProcessor {
       syncAttempts: row.sync_attempts,
       lastSyncError: row.last_sync_error ?? null,
     }));
+  }
+
+  /**
+   * Get events stuck in "streaming" longer than maxAgeMs (e.g. request timeout before response).
+   * Caller can reset them to "pending" for retry.
+   */
+  getStuckStreamingEvents(maxAgeMs: number): WeighingEvent[] {
+    const db = getDatabase();
+    const cutoff = toSqliteDate(new Date(Date.now() - maxAgeMs));
+    const rows = db.prepare(`
+      SELECT 
+        id,
+        device_id,
+        cloud_session_id,
+        offline_mode,
+        offline_batch_id,
+        plu_code,
+        product_name,
+        weight_grams,
+        tare_grams,
+        barcode,
+        scale_timestamp,
+        received_at,
+        source_ip,
+        raw_data,
+        sync_status,
+        cloud_id,
+        synced_at,
+        sync_attempts,
+        last_sync_error
+      FROM events
+      WHERE sync_status = 'streaming'
+        AND received_at < ?
+      ORDER BY received_at ASC
+    `).all(cutoff) as Array<{
+      id: string;
+      device_id: string;
+      cloud_session_id: string | null;
+      offline_mode: number;
+      offline_batch_id: string | null;
+      plu_code: string;
+      product_name: string;
+      weight_grams: number;
+      tare_grams: number;
+      barcode: string;
+      scale_timestamp: string;
+      received_at: string;
+      source_ip: string | null;
+      raw_data: string;
+      sync_status: EventSyncStatus;
+      cloud_id: string | null;
+      synced_at: string | null;
+      sync_attempts: number;
+      last_sync_error: string | null;
+    }>;
+
+    return rows.map(row => ({
+      id: row.id,
+      deviceId: row.device_id,
+      cloudSessionId: row.cloud_session_id ?? null,
+      offlineMode: row.offline_mode === 1,
+      offlineBatchId: row.offline_batch_id ?? null,
+      pluCode: row.plu_code,
+      productName: row.product_name,
+      weightGrams: row.weight_grams,
+      tareGrams: row.tare_grams,
+      barcode: row.barcode,
+      scaleTimestamp: fromSqliteDate(row.scale_timestamp)!,
+      receivedAt: fromSqliteDate(row.received_at)!,
+      sourceIp: row.source_ip ?? null,
+      rawData: row.raw_data,
+      syncStatus: row.sync_status,
+      cloudId: row.cloud_id ?? null,
+      syncedAt: fromSqliteDate(row.synced_at),
+      syncAttempts: row.sync_attempts,
+      lastSyncError: row.last_sync_error ?? null,
+    }));
+  }
+
+  /**
+   * Reset stuck streaming events to pending so they are retried.
+   */
+  resetStuckStreamingEvents(maxAgeMs: number): number {
+    const stuck = this.getStuckStreamingEvents(maxAgeMs);
+    for (const event of stuck) {
+      this.updateSyncStatus(event.id, "pending");
+    }
+    return stuck.length;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

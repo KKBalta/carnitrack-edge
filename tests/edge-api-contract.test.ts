@@ -35,7 +35,7 @@ describe("Edge API contract: URL builder", () => {
     const client = new RestClient({ apiUrl: "https://api.example.com/api/v1" });
     const base = client.getEdgeApiBase();
     expect(base).toBe("https://api.example.com/api/v1/edge");
-    const paths = ["/register", "/sessions", "/events", "/events/batch", "/config", "/devices/status"];
+    const paths = ["/register", "/sessions", "/events", "/events/batch", "/config", "/devices/status", "/heartbeat"];
     for (const p of paths) {
       const full = base + p;
       expect(full).toBe(`https://api.example.com/api/v1/edge${p}`);
@@ -301,6 +301,67 @@ describe("Edge API contract: event POST with X-Edge-Id", () => {
       expect(edgeIdHeader).toBe(validUuid);
       expect(isValidUuid(edgeIdHeader!)).toBe(true);
       expect(capturedUrl).not.toContain("edge/edge");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// POST /heartbeat: URL and X-Edge-Id
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe("Edge API contract: POST /heartbeat", () => {
+  const validUuid = "550e8400-e29b-41d4-a716-446655440000";
+
+  it("POST /heartbeat uses correct URL and X-Edge-Id header", async () => {
+    const client = new RestClient({
+      apiUrl: "http://test/api/v1",
+      edgeIdentity: {
+        edgeId: validUuid,
+        siteId: "site-001",
+        siteName: "Test",
+        registeredAt: new Date(),
+      },
+      autoStart: false,
+    });
+    let capturedUrl = "";
+    let capturedHeaders: Headers | undefined;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = mock(async (url: string | URL, init?: RequestInit) => {
+      const u = typeof url === "string" ? url : url.toString();
+      capturedUrl = u;
+      if (u.includes("/heartbeat") && init?.method === "POST") {
+        capturedHeaders = init?.headers instanceof Headers ? init.headers : new Headers(init?.headers as HeadersInit);
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response("Not Found", { status: 404 });
+    });
+
+    try {
+      const payload = {
+        version: "0.3.0",
+        uptimeSec: 100,
+        health: "ok" as const,
+        devices: [
+          {
+            deviceId: "SCALE-01",
+            globalDeviceId: "SITE01-SCALE-01",
+            deviceType: "disassembly",
+            status: "online",
+            lastHeartbeatAt: new Date().toISOString(),
+            lastEventAt: new Date().toISOString(),
+          },
+        ],
+      };
+      const res = await client.postHeartbeat(payload);
+      expect(res.ok).toBe(true);
+      expect(capturedUrl).toContain("/heartbeat");
+      expect(capturedUrl).not.toContain("edge/edge");
+      expect(capturedHeaders?.get("X-Edge-Id")).toBe(validUuid);
     } finally {
       globalThis.fetch = originalFetch;
     }

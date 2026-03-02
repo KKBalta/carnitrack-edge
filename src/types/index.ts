@@ -140,7 +140,7 @@ export interface DeviceRuntimeState {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /** Session status (controlled by Cloud) */
-export type SessionStatus = "active" | "paused";
+export type SessionStatus = "active" | "pending" | "paused";
 
 /** 
  * Active session cache entry
@@ -407,6 +407,24 @@ export interface BatchPostResponse {
   }>;
 }
 
+/** Payload for offline batch ACK (Edge → Cloud) */
+export interface OfflineBatchAckPayload {
+  batchId: string;
+  deviceId: string;
+  eventIds: string[];
+  eventCount: number;
+  totalWeightGrams: number;
+  startedAt: string;
+  endedAt: string;
+}
+
+/** Response from Cloud for offline batch ACK */
+export interface OfflineBatchAckResponse {
+  batchId: string;
+  status: "received" | "already_received";
+  receivedAt: string;
+}
+
 /** REST API response for sessions GET */
 export interface SessionsResponse {
   sessions: Array<{
@@ -416,7 +434,7 @@ export interface SessionsResponse {
     animalTag?: string | null;
     animalSpecies?: string | null;
     operatorId?: string | null;
-    status: "active" | "paused";
+    status: "active" | "pending" | "paused";
   }>;
 }
 

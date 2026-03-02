@@ -21,7 +21,18 @@ export {
   type EventPostResponse,
   type BatchPostResponse,
   type SessionsResponse,
+  type HeartbeatPayload,
+  type HeartbeatDeviceEntry,
 } from "./rest-client.ts";
+
+export {
+  updateCloudConfig,
+  getSessionPollIntervalMs,
+  getHeartbeatIntervalMs,
+  getCloudConfigSnapshot,
+  resetCloudConfig,
+  type CloudConfigSnapshot,
+} from "./cloud-config.ts";
 
 export {
   OfflineBatchManager,

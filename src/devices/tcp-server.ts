@@ -41,8 +41,8 @@ export interface SocketMeta {
 export interface TCPServerCallbacks {
   /** Called when a new connection is established */
   onConnection: (socketId: string, meta: SocketMeta) => void;
-  /** Called when data is received from a socket */
-  onData: (socketId: string, data: Buffer, meta: SocketMeta) => void;
+  /** Called when data is received from a socket (may be async) */
+  onData: (socketId: string, data: Buffer, meta: SocketMeta) => void | Promise<void>;
   /** Called when a socket disconnects */
   onDisconnect: (socketId: string, meta: SocketMeta, reason: string) => void;
   /** Called when a socket error occurs */
@@ -113,6 +113,8 @@ export class TCPServer {
   private server: TCPSocketListener | null = null;
   private sockets: Map<string, Socket<SocketMeta>> = new Map();
   private socketMetaMap: Map<string, SocketMeta> = new Map();
+  /** Per-socket processing chain: ensures data is handled sequentially (registration→poll→event) */
+  private socketProcessingChain: Map<string, Promise<void>> = new Map();
   private callbacks: TCPServerCallbacks;
   private config: TCPServerConfig;
   private stats: TCPServerStats;
@@ -192,8 +194,15 @@ export class TCPServer {
 
             log("debug", `Data received from ${meta.id}: ${buffer.length} bytes`);
 
-            // Notify callback
-            self.callbacks.onData(meta.id, buffer, meta);
+            // Chain processing per socket so registration's pollNow completes before event
+            const prev = self.socketProcessingChain.get(meta.id) ?? Promise.resolve();
+            const next = prev.then(() => {
+              const result = self.callbacks.onData(meta.id, buffer, meta);
+              return result instanceof Promise ? result : Promise.resolve();
+            }).catch((err) => {
+              log("error", `Data handler error for ${meta.id}:`, err);
+            });
+            self.socketProcessingChain.set(meta.id, next);
           },
 
           // ─────────────────────────────────────────────────────────────────────
@@ -213,6 +222,7 @@ export class TCPServer {
             // Clean up maps
             self.sockets.delete(meta.id);
             self.socketMetaMap.delete(meta.id);
+            self.socketProcessingChain.delete(meta.id);
 
             // Notify callback
             self.callbacks.onDisconnect(meta.id, meta, reason);

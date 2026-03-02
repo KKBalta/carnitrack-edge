@@ -162,6 +162,9 @@ export const config = {
     
     /** How long to keep offline batches before cleanup (days) */
     batchRetentionDays: Number(process.env.OFFLINE_BATCH_RETENTION_DAYS) || 30,
+    
+    /** Require Cloud batch ACK before marking offline batch as synced (prevents duplicate sends) */
+    offlineBatchAckRequired: process.env.OFFLINE_BATCH_ACK_REQUIRED === "true",
   },
 
   // ═══════════════════════════════════════════════════════════════════════════
