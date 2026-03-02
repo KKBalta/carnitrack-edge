@@ -1086,7 +1086,10 @@ async function handleApi(req: Request, path: string): Promise<Response> {
   if (path === "/api/status" && req.method === "GET") {
     const restClient = getRestClient();
     const restState = restClient?.getState();
-    
+    // Use rest.isOnline as fallback: if we're actually reaching the cloud, show "connected"
+    const effectiveCloudConnection =
+      restClient?.isOnline() ? "connected" : state.cloudConnection;
+
     return Response.json({
       success: true,
       data: {
@@ -1101,7 +1104,7 @@ async function handleApi(req: Request, path: string): Promise<Response> {
         activeSessions: getSessionCacheManager().getAllActiveSessions().length,
         pendingOfflineBatches: getOfflineBatchManager().getPendingSyncBatches().length,
         pendingEventSync: getCloudSyncService().getPendingCount(),
-        cloudConnection: state.cloudConnection,
+        cloudConnection: effectiveCloudConnection,
         offlineMode: state.offlineMode,
         pluUpdateNeeded: false,
         uptime: (Date.now() - state.startedAt.getTime()) / 1000,

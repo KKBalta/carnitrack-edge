@@ -327,6 +327,10 @@ export class RestClient {
       this.state.lastDisconnected = new Date();
       this.updateState("disconnected");
       this.emit("disconnected", { timestamp: new Date() });
+    } else if (this.state.status === "connecting") {
+      // Transition from "connecting" to "disconnected" when checkConnection fails
+      this.updateState("disconnected");
+      this.emit("disconnected", { timestamp: new Date() });
     }
     this.state.consecutiveFailures++;
   }
