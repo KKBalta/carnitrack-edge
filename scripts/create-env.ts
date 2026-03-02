@@ -314,7 +314,7 @@ function readInput(rl: ReturnType<ReturnType<typeof require>["createInterface"]>
   });
 }
 
-/** Quick mode: prompt only for SITE_ID, REGISTRATION_TOKEN, EDGE_NAME */
+/** Quick mode: prompt only for SITE_ID, EDGE_NAME; other vars use defaults or process.env */
 async function quickMode(): Promise<Map<string, string>> {
   const values = new Map<string, string>();
 
@@ -347,7 +347,8 @@ async function quickMode(): Promise<Map<string, string>> {
 
   for (const envVar of envVars) {
     if (!values.has(envVar.name)) {
-      values.set(envVar.name, envVar.defaultValue);
+      const fromEnv = process.env[envVar.name];
+      values.set(envVar.name, fromEnv !== undefined && fromEnv !== "" ? fromEnv : envVar.defaultValue);
     }
   }
   return values;

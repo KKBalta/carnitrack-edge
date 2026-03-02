@@ -73,7 +73,13 @@ The following environment variables are **required** and must be set before runn
    bun scripts/create-env.ts --output .env
    ```
 
-3. **Quick template generation (shell):**
+3. **Create .env from Docker setup (test defaults):**
+   ```bash
+   ./scripts/docker-setup.sh env
+   ```
+   Uses mock server URL and test SITE_ID/EDGE_NAME. Override with your own env vars if needed.
+
+4. **Quick template generation (shell):**
    ```bash
    ./scripts/create-env.sh .env.example
    ```

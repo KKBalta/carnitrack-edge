@@ -19,38 +19,42 @@ This guide covers deploying CarniTrack Edge Service in production using Docker.
 git clone <repository-url>
 cd carnitrack-edge
 
-# Copy environment template
-cp .env.example .env
-
-# Edit .env with your configuration
-nano .env
+# Create .env (2 prompts: SITE_ID, EDGE_NAME; REGISTRATION_TOKEN can add later)
+bun scripts/create-env.ts
 ```
 
-### 2. Configure Environment Variables
-
-Edit `.env` file with your production settings:
+Or use the Docker setup script:
 
 ```bash
-# Required: Site configuration
-EDGE_NAME="Main Production Facility"
-SITE_ID="site-prod-001"
-# API root only (no trailing slash, no /edge — Edge appends /edge/... itself)
-CLOUD_API_URL="https://api.carnitrack.com/api/v1"
+# Create .env with production defaults
+bun scripts/create-env.ts
 
-# Optional: Customize ports if needed
-TCP_PORT=8899
-HTTP_PORT=3000
+# Deploy (creates .env if missing)
+./scripts/docker-setup.sh prod
 ```
+
+### 2. Environment Variables
+
+The `create-env.ts` script generates `.env` with production defaults. Key variables:
+
+| Variable | Description |
+|----------|-------------|
+| `SITE_ID` | Site ID from Cloud (required) |
+| `EDGE_NAME` | Human-readable Edge name |
+| `REGISTRATION_TOKEN` | Can be left empty and added later |
+| `CLOUD_API_URL` | Cloud API root (default: production URL) |
 
 ### 3. Start Services
 
-**Development:**
+**Production (recommended):**
 ```bash
-docker compose up -d
+./scripts/docker-setup.sh prod
 ```
+Creates `.env` if missing, then deploys with `docker-compose.yml` + `docker-compose.prod.yml`. The container loads `.env` via `env_file`.
 
-**Production (with resource limits):**
+**Manual:**
 ```bash
+# Ensure .env exists first
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 ```
 

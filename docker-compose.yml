@@ -1,13 +1,15 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 # CarniTrack Edge Service - Docker Compose
 # ═══════════════════════════════════════════════════════════════════════════════
-# 
-# Usage:
-#   Development:  docker compose up
-#   Production:   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
-#   Logs:         docker compose logs -f carnitrack-edge
-#   Stop:         docker compose down
 #
+# Usage:
+#   1. Create .env:  bun scripts/create-env.ts   (or ./scripts/docker-setup.sh env)
+#   2. Development:  docker compose up
+#   3. Production:   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#   Logs:           docker compose logs -f carnitrack-edge
+#   Stop:           docker compose down
+#
+# The .env file (from create-env.ts) is loaded into the container.
 # ═══════════════════════════════════════════════════════════════════════════════
 
 services:
@@ -17,6 +19,10 @@ services:
       dockerfile: Dockerfile
     container_name: carnitrack-edge
     restart: unless-stopped
+    
+    # Load .env from project root (created by create-env.ts)
+    env_file:
+      - .env
     
     # ─────────────────────────────────────────────────────────────────────────────
     # Port Mapping
@@ -36,8 +42,8 @@ services:
       - SITE_ID=${SITE_ID:-}
       - REGISTRATION_TOKEN=${REGISTRATION_TOKEN:-}
       
-      # Cloud Connection
-      - CLOUD_API_URL=${CLOUD_API_URL:-https://api.carnitrack.com/api/v1/edge}
+      # Cloud Connection (default from create-env.ts)
+      - CLOUD_API_URL=${CLOUD_API_URL:-https://carnitrack-app-1000671720976.europe-west1.run.app/api/v1}
       
       # Servers
       - TCP_PORT=${TCP_PORT:-8899}

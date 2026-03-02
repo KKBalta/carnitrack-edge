@@ -129,6 +129,9 @@ show_usage() {
     echo "  status      Show status of all services"
     echo "  mock        Start only the mock server (foreground)"
     echo "  edge        Start only the Docker Edge (mock must be running)"
+    echo "  env         Create or edit .env (runs create-env.ts quick mode)"
+    echo "  prod        Production: create .env if needed, deploy Docker (uses .env)"
+    echo "  prod-stop   Stop production Docker"
     echo "  info        Show network and connection information"
     echo "  build       Build Docker image only"
     echo "  clean       Stop and remove containers, volumes, and networks"
@@ -136,8 +139,13 @@ show_usage() {
     echo "  backup      Backup SQLite database"
     echo "  help        Show this help message"
     echo ""
-    echo -e "${BOLD}Quick Start:${NC}"
-    echo "  $0 start    # Starts everything automatically"
+    echo -e "${BOLD}Quick Start (Test):${NC}"
+    echo "  $0 env      # Create .env (test defaults)"
+    echo "  $0 start    # Mock server + Docker Edge"
+    echo ""
+    echo -e "${BOLD}Production:${NC}"
+    echo "  bun scripts/create-env.ts   # Create .env (production defaults)"
+    echo "  $0 prod                    # Deploy production Docker (uses .env)"
     echo ""
 }
 
@@ -188,6 +196,20 @@ cmd_start() {
     print_banner
     check_docker
     check_bun
+    
+    # Ensure .env exists; offer to create via create-env.ts
+    if [ ! -f "$PROJECT_DIR/.env" ]; then
+        echo -e "${YELLOW}No .env file found.${NC}"
+        echo "Create one now? (2 prompts: SITE_ID, EDGE_NAME) [y/N]"
+        read -r reply
+        if [[ "$reply" =~ ^[yY] ]]; then
+            bun scripts/create-env.ts
+        else
+            echo -e "${YELLOW}Continuing with docker-compose defaults (test mode).${NC}"
+            echo "Run ${CYAN}$0 env${NC} later to create .env for production."
+        fi
+        echo ""
+    fi
     
     local ip=$(get_local_ip)
     
@@ -434,6 +456,64 @@ cmd_info() {
     show_network_info
 }
 
+cmd_env() {
+    check_bun
+    echo -e "${YELLOW}Creating/editing .env (quick mode: SITE_ID, EDGE_NAME)...${NC}"
+    echo ""
+    # Use mock server URL for Docker test setup; override with your own CLOUD_API_URL for production
+    CLOUD_API_URL="${CLOUD_API_URL:-http://host.docker.internal:4000/api/v1}" \
+        SITE_ID="${SITE_ID:-SITE-DOCKER-01}" \
+        EDGE_NAME="${EDGE_NAME:-CarniTrack-Edge-Docker}" \
+        bun scripts/create-env.ts
+}
+
+cmd_prod() {
+    print_banner
+    check_docker
+    check_bun
+
+    # Ensure .env exists (required by docker-compose.yml env_file)
+    if [ ! -f "$PROJECT_DIR/.env" ]; then
+        echo -e "${YELLOW}No .env file found. Creating one (production defaults)...${NC}"
+        echo ""
+        # Run create-env with production defaults (no test vars)
+        bun scripts/create-env.ts
+        if [ ! -f "$PROJECT_DIR/.env" ]; then
+            echo -e "${RED}Failed to create .env. Aborting.${NC}"
+            exit 1
+        fi
+        echo ""
+    fi
+
+    local ip=$(get_local_ip)
+    echo -e "${YELLOW}Deploying production Edge (using .env)...${NC}"
+    echo ""
+
+    docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+
+    if [ $? -eq 0 ]; then
+        echo ""
+        echo -e "${GREEN}✓ Production Edge deployed${NC}"
+        echo ""
+        echo -e "${BOLD}Connection Info:${NC}"
+        echo -e "  Scales connect to: ${CYAN}$ip:8899${NC}"
+        echo -e "  Admin Dashboard:   ${CYAN}http://$ip:3000${NC}"
+        echo ""
+        echo -e "View logs:  ${CYAN}docker compose -f docker-compose.yml -f docker-compose.prod.yml logs -f${NC}"
+        echo -e "Stop:      ${CYAN}$0 prod-stop${NC}"
+    else
+        echo -e "${RED}✗ Failed to start production container${NC}"
+        exit 1
+    fi
+}
+
+cmd_prod_stop() {
+    echo -e "${YELLOW}Stopping production Edge...${NC}"
+    docker compose -f docker-compose.yml -f docker-compose.prod.yml down
+    echo -e "${GREEN}✓ Production Edge stopped${NC}"
+    echo -e "${BLUE}Note: Data is preserved in Docker volumes${NC}"
+}
+
 # ─────────────────────────────────────────────────────────────────────────────────
 # Main entry point
 # ─────────────────────────────────────────────────────────────────────────────────
@@ -459,6 +539,15 @@ case "${1:-help}" in
         ;;
     edge)
         cmd_edge
+        ;;
+    env)
+        cmd_env
+        ;;
+    prod)
+        cmd_prod
+        ;;
+    prod-stop)
+        cmd_prod_stop
         ;;
     build)
         cmd_build
