@@ -70,8 +70,18 @@ export const config = {
     /** Cloud API base URL. Can be API root (e.g. .../api/v1) or edge base (.../api/v1/edge); client normalizes to avoid duplicated /edge/ */
     apiUrl: process.env.CLOUD_API_URL || "https://api.carnitrack.com/api/v1",
     
-    /** Session polling interval (ms) */
+    /** Session polling interval (ms) - fallback when adaptive intervals not used */
     sessionPollIntervalMs: Number(process.env.SESSION_POLL_INTERVAL_MS) || 5_000,
+
+    /** Adaptive polling: interval when no devices connected (ms) */
+    sessionPollIntervalIdleMs:
+      Number(process.env.SESSION_POLL_INTERVAL_IDLE_MS) || 120_000,
+    /** Adaptive polling: interval when device connected, waiting for session (ms) */
+    sessionPollIntervalWaitingMs:
+      Number(process.env.SESSION_POLL_INTERVAL_WAITING_MS) || 5_000,
+    /** Adaptive polling: interval when session active (ms) */
+    sessionPollIntervalActiveMs:
+      Number(process.env.SESSION_POLL_INTERVAL_ACTIVE_MS) || 30_000,
     
     /** Event POST timeout (ms) */
     eventSendTimeoutMs: Number(process.env.EVENT_SEND_TIMEOUT_MS) || 10_000,

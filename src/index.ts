@@ -534,7 +534,7 @@ async function main() {
   console.log(BANNER);
   console.log(`[MAIN] Starting CarniTrack Edge Service...`);
   console.log(`[MAIN] Version: 0.3.0 (Cloud-Centric)`);
-  console.log(`[MAIN] Runtime: Bun ${Bun.version}`);
+  console.log(`[MAIN] Runtime: Bun ${Bun.version}${isRunningInDocker() ? " (Docker)" : ""}`);
   console.log("");
   
   // ─────────────────────────────────────────────────────────────────────────────

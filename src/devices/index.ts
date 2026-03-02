@@ -6,7 +6,7 @@
 
 // TCP Server
 export { TCPServer, setGlobalTCPServer, getGlobalTCPServer } from "./tcp-server.ts";
-export type { SocketMeta, TCPServerOptions, TCPServerStats } from "./tcp-server.ts";
+export type { SocketMeta, TCPServerConfig, TCPServerStats } from "./tcp-server.ts";
 
 // Scale Parser
 export { 

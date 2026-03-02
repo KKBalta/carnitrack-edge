@@ -88,7 +88,12 @@ interface EdgeConnection {
 
 const connections = new Map<WebSocket, EdgeConnection>();
 
-const server = Bun.serve({
+interface WebSocketData {
+  edgeId: string | null;
+  siteId: string | null;
+}
+
+Bun.serve<WebSocketData>({
   port: PORT,
   hostname: HOST,
   
@@ -160,7 +165,7 @@ const server = Bun.serve({
   
   websocket: {
     open(ws) {
-      const data = ws.data as { edgeId?: string; siteId?: string };
+      const data = ws.data;
       
       connections.set(ws as unknown as WebSocket, {
         edgeId: data.edgeId || null,
@@ -192,10 +197,6 @@ const server = Bun.serve({
       const conn = connections.get(ws as unknown as WebSocket);
       log(`Edge disconnected: ${conn?.edgeId || "unknown"} (code=${code}, reason=${reason})`);
       connections.delete(ws as unknown as WebSocket);
-    },
-    
-    error(ws, error) {
-      log(`WebSocket error: ${error}`);
     },
   },
 });
@@ -235,7 +236,7 @@ function handleEdgeMessage(ws: WebSocket, msg: CloudMessage, conn: EdgeConnectio
       
     case "ping":
       // Respond to Edge ping with pong
-      sendToEdge(ws, { type: "pong" as CloudToEdgeMessageType, payload: {} });
+      sendToEdge(ws, createMessage("pong", {}));
       break;
       
     case "pong":
@@ -323,20 +324,19 @@ function handleEventBatch(ws: WebSocket, msg: CloudMessage): void {
   log(`→ Sent ${payload.events.length} acknowledgments`);
 }
 
-function handleDeviceConnected(ws: WebSocket, msg: CloudMessage): void {
+function handleDeviceConnected(_ws: WebSocket, msg: CloudMessage): void {
   const payload = msg.payload as { deviceId: string; globalDeviceId: string };
   log(`  Device connected: ${payload.deviceId} (${payload.globalDeviceId})`);
 }
 
-function handleDeviceDisconnected(ws: WebSocket, msg: CloudMessage): void {
+function handleDeviceDisconnected(_ws: WebSocket, msg: CloudMessage): void {
   const payload = msg.payload as { deviceId: string };
   log(`  Device disconnected: ${payload.deviceId}`);
 }
 
 function sendToEdge(ws: WebSocket, message: CloudMessage): void {
   try {
-    // @ts-expect-error - Bun WebSocket API difference
-    ws.send(JSON.stringify(message));
+    (ws as { send(data: string | Buffer): void }).send(JSON.stringify(message));
   } catch (err) {
     log(`Failed to send message: ${err}`);
   }

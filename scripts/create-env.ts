@@ -100,7 +100,25 @@ const envVars: EnvVar[] = [
   {
     name: "SESSION_POLL_INTERVAL_MS",
     defaultValue: "5000",
-    description: "Session polling interval (ms)",
+    description: "Session polling interval (ms) - fallback when adaptive not used",
+    category: "Cloud Connection",
+  },
+  {
+    name: "SESSION_POLL_INTERVAL_IDLE_MS",
+    defaultValue: "120000",
+    description: "Adaptive polling: interval when no devices connected (ms)",
+    category: "Cloud Connection",
+  },
+  {
+    name: "SESSION_POLL_INTERVAL_WAITING_MS",
+    defaultValue: "5000",
+    description: "Adaptive polling: interval when device connected, waiting for session (ms)",
+    category: "Cloud Connection",
+  },
+  {
+    name: "SESSION_POLL_INTERVAL_ACTIVE_MS",
+    defaultValue: "30000",
+    description: "Adaptive polling: interval when session active (ms)",
     category: "Cloud Connection",
   },
   {

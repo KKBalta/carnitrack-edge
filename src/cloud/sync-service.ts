@@ -484,8 +484,8 @@ export class CloudSyncService {
     // Mark batch as syncing
     offlineBatchManager.markBatchSyncing(batchId);
 
-    // Get events for this batch
-    const events = eventProcessor.getEventsByBatch(batchId);
+    // Get events for this batch (used for batch context; sync happens via syncPendingEvents)
+    void eventProcessor.getEventsByBatch(batchId);
 
     // Note: Offline batch notification can be sent via REST if Cloud API supports it
     // For now, we'll just sync the events

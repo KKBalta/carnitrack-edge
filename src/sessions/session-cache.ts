@@ -11,7 +11,11 @@
 import { getDatabase } from "../storage/database.ts";
 import { toSqliteDate, fromSqliteDate } from "../storage/database.ts";
 import { config } from "../config.ts";
-import { getSessionPollIntervalMs } from "../cloud/cloud-config.ts";
+import {
+  getSessionPollIntervalIdleMs,
+  getSessionPollIntervalWaitingMs,
+  getSessionPollIntervalActiveMs,
+} from "../cloud/cloud-config.ts";
 import type { SessionCache, SessionStatus } from "../types/index.ts";
 import type { RestClient } from "../cloud/rest-client.ts";
 import type { DeviceManager } from "../devices/device-manager.ts";
@@ -40,6 +44,11 @@ export class SessionCacheManager {
   private restClient: RestClient | null = null;
   private deviceManager: DeviceManager | null = null;
 
+  /** ETag from last sessions response (for If-None-Match) */
+  private sessionsETag: string | null = null;
+  /** Poll efficiency stats (for optional logging) */
+  private pollStats = { total: 0, notModified: 0 };
+
   constructor() {
     // Start periodic cleanup of expired sessions
     this.startCleanupTimer();
@@ -64,17 +73,19 @@ export class SessionCacheManager {
 
   /**
    * Start polling for active sessions from Cloud.
-   * Interval is config-driven (GET /config sessionPollIntervalMs) with fallback to static config.
-   * Uses rescheduling setTimeout so interval can change at runtime without restart.
+   * Uses adaptive interval (idle/waiting/active) and ETag for 304 Not Modified.
    */
   startPolling(): void {
     this.stopPolling();
     this.pollingActive = true;
-    const intervalMs = getSessionPollIntervalMs();
-    console.log(`[SessionCache] Session polling started (interval ${intervalMs}ms, config-driven)`);
+    const intervalMs = this.getAdaptiveInterval();
+    console.log(
+      `[SessionCache] Session polling started (adaptive interval, initial ${intervalMs}ms, ETag enabled)`
+    );
 
     const scheduleNext = (): void => {
       if (!this.pollingActive) return;
+      const interval = this.getAdaptiveInterval();
       this.pollTimeoutId = setTimeout(() => {
         this.pollTimeoutId = null;
         if (!this.pollingActive) return;
@@ -85,7 +96,7 @@ export class SessionCacheManager {
           .finally(() => {
             if (this.pollingActive) scheduleNext();
           });
-      }, getSessionPollIntervalMs());
+      }, interval);
     };
 
     // Poll immediately then schedule next
@@ -94,6 +105,23 @@ export class SessionCacheManager {
     }).finally(() => {
       if (this.pollingActive) scheduleNext();
     });
+  }
+
+  /**
+   * Compute adaptive poll interval based on device/session state.
+   */
+  private getAdaptiveInterval(): number {
+    const activeDevices = this.deviceManager?.getActiveDevices() ?? [];
+    const hasConnectedDevices = activeDevices.length > 0;
+    const hasActiveSessions = this.getAllActiveSessions().length > 0;
+
+    if (!hasConnectedDevices) {
+      return getSessionPollIntervalIdleMs();
+    }
+    if (hasConnectedDevices && !hasActiveSessions) {
+      return getSessionPollIntervalWaitingMs();
+    }
+    return getSessionPollIntervalActiveMs();
   }
 
   /**
@@ -133,7 +161,15 @@ export class SessionCacheManager {
     }
 
     try {
-      const response = await this.restClient.getSessions(deviceIds);
+      const response = await this.restClient.getSessions(deviceIds, this.sessionsETag);
+      this.pollStats.total++;
+      if (response.notModified) {
+        this.pollStats.notModified++;
+        return;
+      }
+      if (response.etag) {
+        this.sessionsETag = response.etag;
+      }
       const cloudSessions = response.sessions || [];
 
       if (cloudSessions.length === 0 && deviceIds.length > 0) {
@@ -301,7 +337,7 @@ export class SessionCacheManager {
 
     // Build update query dynamically
     const updates: string[] = [];
-    const values: unknown[] = [];
+    const values: (string | null)[] = [];
 
     if (changes.deviceId !== undefined) {
       updates.push("device_id = ?");

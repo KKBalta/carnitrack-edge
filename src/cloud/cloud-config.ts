@@ -8,6 +8,9 @@ import { config } from "../config.ts";
 
 export interface CloudConfigSnapshot {
   sessionPollIntervalMs: number;
+  sessionPollIntervalIdleMs: number;
+  sessionPollIntervalWaitingMs: number;
+  sessionPollIntervalActiveMs: number;
   heartbeatIntervalMs: number;
   workHoursStart: string;
   workHoursEnd: string;
@@ -16,6 +19,9 @@ export interface CloudConfigSnapshot {
 
 const DEFAULTS: CloudConfigSnapshot = {
   sessionPollIntervalMs: config.rest.sessionPollIntervalMs,
+  sessionPollIntervalIdleMs: config.rest.sessionPollIntervalIdleMs,
+  sessionPollIntervalWaitingMs: config.rest.sessionPollIntervalWaitingMs,
+  sessionPollIntervalActiveMs: config.rest.sessionPollIntervalActiveMs,
   heartbeatIntervalMs: 30_000,
   workHoursStart: config.workHours.start,
   workHoursEnd: config.workHours.end,
@@ -31,6 +37,24 @@ let snapshot: CloudConfigSnapshot = { ...DEFAULTS };
 export function updateCloudConfig(cloud: Record<string, unknown>): void {
   if (typeof cloud.sessionPollIntervalMs === "number" && cloud.sessionPollIntervalMs > 0) {
     snapshot.sessionPollIntervalMs = cloud.sessionPollIntervalMs;
+  }
+  if (
+    typeof cloud.sessionPollIntervalIdleMs === "number" &&
+    cloud.sessionPollIntervalIdleMs > 0
+  ) {
+    snapshot.sessionPollIntervalIdleMs = cloud.sessionPollIntervalIdleMs;
+  }
+  if (
+    typeof cloud.sessionPollIntervalWaitingMs === "number" &&
+    cloud.sessionPollIntervalWaitingMs > 0
+  ) {
+    snapshot.sessionPollIntervalWaitingMs = cloud.sessionPollIntervalWaitingMs;
+  }
+  if (
+    typeof cloud.sessionPollIntervalActiveMs === "number" &&
+    cloud.sessionPollIntervalActiveMs > 0
+  ) {
+    snapshot.sessionPollIntervalActiveMs = cloud.sessionPollIntervalActiveMs;
   }
   if (typeof cloud.heartbeatIntervalMs === "number" && cloud.heartbeatIntervalMs > 0) {
     snapshot.heartbeatIntervalMs = cloud.heartbeatIntervalMs;
@@ -51,6 +75,27 @@ export function updateCloudConfig(cloud: Record<string, unknown>): void {
  */
 export function getSessionPollIntervalMs(): number {
   return snapshot.sessionPollIntervalMs;
+}
+
+/**
+ * Get adaptive poll interval for idle state (no devices connected).
+ */
+export function getSessionPollIntervalIdleMs(): number {
+  return snapshot.sessionPollIntervalIdleMs;
+}
+
+/**
+ * Get adaptive poll interval for waiting state (device connected, no session).
+ */
+export function getSessionPollIntervalWaitingMs(): number {
+  return snapshot.sessionPollIntervalWaitingMs;
+}
+
+/**
+ * Get adaptive poll interval for active state (session running).
+ */
+export function getSessionPollIntervalActiveMs(): number {
+  return snapshot.sessionPollIntervalActiveMs;
 }
 
 /**

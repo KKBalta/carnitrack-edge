@@ -103,6 +103,13 @@ export interface SessionsResponse {
   }>;
 }
 
+/** Sessions response with ETag metadata (for 304 Not Modified support) */
+export interface SessionsResponseWithMeta {
+  sessions: SessionsResponse["sessions"];
+  notModified: boolean;
+  etag: string | null;
+}
+
 /** Heartbeat device entry for POST /heartbeat */
 export interface HeartbeatDeviceEntry {
   deviceId: string;
@@ -346,7 +353,12 @@ export class RestClient {
     method: string,
     path: string,
     body?: unknown,
-    options: { timeout?: number; skipRetry?: boolean; skipEdgeRecovery?: boolean } = {}
+    options: {
+      timeout?: number;
+      skipRetry?: boolean;
+      skipEdgeRecovery?: boolean;
+      headers?: Record<string, string>;
+    } = {}
   ): Promise<Response> {
     if (this.isAuthenticatedEdgePath(path)) {
       await this.ensureEdgeIdentity("missing_or_invalid");
@@ -357,6 +369,7 @@ export class RestClient {
       "Content-Type": "application/json",
       "X-Client-Type": "carnitrack-edge",
       "X-Client-Version": "0.3.0",
+      ...options.headers,
     };
     
     // Add authentication headers
@@ -394,7 +407,8 @@ export class RestClient {
         const response = await fetch(url, requestOptions);
         clearTimeout(timeoutId);
         
-        if (response.ok) {
+        // 2xx and 304 (Not Modified) are success; 304 is 3xx so response.ok is false
+        if (response.ok || response.status === 304) {
           this.markOnline();
           return response;
         }
@@ -621,15 +635,30 @@ export class RestClient {
   }
 
   /**
-   * Get active sessions for devices
+   * Get active sessions for devices.
+   * Supports ETag: pass currentETag to send If-None-Match; on 304 returns notModified: true.
    */
-  async getSessions(deviceIds: string[]): Promise<SessionsResponse> {
+  async getSessions(
+    deviceIds: string[],
+    currentETag?: string | null
+  ): Promise<SessionsResponseWithMeta> {
     const deviceIdsParam = deviceIds.join(",");
-    const response = await this.request("GET", `/sessions?device_ids=${deviceIdsParam}`);
+    const headers: Record<string, string> = {};
+    if (currentETag) {
+      headers["If-None-Match"] = currentETag;
+    }
+    const response = await this.request("GET", `/sessions?device_ids=${deviceIdsParam}`, undefined, {
+      headers,
+    });
+    if (response.status === 304) {
+      return { sessions: [], notModified: true, etag: currentETag ?? null };
+    }
     if (!response.ok) {
       throw new Error(`Get sessions failed: ${response.statusText}`);
     }
-    return await response.json() as SessionsResponse;
+    const data = (await response.json()) as SessionsResponse;
+    const newETag = response.headers.get("ETag");
+    return { sessions: data.sessions, notModified: false, etag: newETag };
   }
 
   /**

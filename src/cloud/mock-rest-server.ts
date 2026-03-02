@@ -571,7 +571,7 @@ async function handleEdgeProxyDevices(req: Request): Promise<Response> {
       }, { status: response.status });
     }
     
-    const data = await response.json();
+    const data = (await response.json()) as { data?: unknown[] };
     log(`[PROXY] ✓ Successfully fetched ${data.data?.length || 0} devices from Edge`);
     
     return Response.json({
@@ -605,7 +605,7 @@ async function handleEdgeProxyDevices(req: Request): Promise<Response> {
 /**
  * Proxy endpoint to check Edge status
  */
-async function handleEdgeProxyStatus(req: Request): Promise<Response> {
+async function handleEdgeProxyStatus(_req: Request): Promise<Response> {
   const edgeUrl = `${EDGE_API_URL}/api/status`;
   
   log(`[PROXY] Checking Edge status: ${edgeUrl}`);
@@ -633,12 +633,12 @@ async function handleEdgeProxyStatus(req: Request): Promise<Response> {
       }, { status: response.status });
     }
     
-    const data = await response.json();
+    const data = (await response.json()) as { data?: unknown };
     log(`[PROXY] ✓ Edge status check successful`);
     
     return Response.json({
       success: true,
-      data: data.data || data,
+      data: data.data ?? data,
       edgeUrl,
       fetchedAt: new Date().toISOString(),
     });
