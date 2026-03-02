@@ -37,12 +37,26 @@ describe("Scale Parser", () => {
       expect(result.errors.length).toBe(0);
     });
 
-    it("should classify weighing event CSV with invalid barcode-PLU as unknown", () => {
+    it("should parse weighing event CSV with valid 13-digit EAN-13 barcode", () => {
       // CSV format: PLU,TIME,DATE,PRODUCT,BARCODE,CODE,OPERATOR,VAL1(gross),VAL2(tare),VAL3(net),FLAGS...,COMPANY
-      // Large values (>= 1000) are already in grams
+      // EAN-13 barcodes (13 digits) are standard and must be accepted
       // Weight is read from VAL3 field (index 9): 0000037500 = 37500 grams (net weight)
-      // Tare is read from VAL2 field (index 8): 0000000000 = 0 grams
       const csvLine = "00001,10:30:00,30.01.2026,KIYMA           ,2000001025004,000,MEHMET        ,0000002500,0000000000,0000037500,0,0,0,1,N,TEST COMPANY";
+      const result = parser.parse("socket-123", Buffer.from(csvLine + "\n"));
+      
+      expect(result.packets.length).toBe(1);
+      expect(result.packets[0].type).toBe("weighing_event");
+      if (result.packets[0].type === "weighing_event") {
+        expect(result.packets[0].event.pluCode).toBe("2000001025004");
+        expect(result.packets[0].event.barcode).toBe("2000001025004");
+        expect(result.packets[0].event.weightGrams).toBe(37500);
+      }
+      expect(result.errors.length).toBe(0);
+    });
+
+    it("should classify weighing event CSV with invalid barcode-PLU as unknown", () => {
+      // Invalid: barcode with only 4 digits (below minimum 5)
+      const csvLine = "00001,10:30:00,30.01.2026,KIYMA           ,1234,000,MEHMET        ,0000002500,0000000000,0000037500,0,0,0,1,N,TEST COMPANY";
       const result = parser.parse("socket-123", Buffer.from(csvLine + "\n"));
       
       expect(result.packets.length).toBe(1);
@@ -84,7 +98,7 @@ describe("Scale Parser", () => {
       expect(result.packets.length).toBe(3);
       expect(result.packets[0].type).toBe("registration");
       expect(result.packets[1].type).toBe("heartbeat");
-      expect(result.packets[2].type).toBe("unknown");
+      expect(result.packets[2].type).toBe("weighing_event");
     });
 
     it("should handle fragmented packets", () => {
@@ -105,10 +119,10 @@ describe("Scale Parser", () => {
       expect(chunk1.packets.length).toBe(0);
       expect(chunk1.remainder.length).toBeGreaterThan(0);
       
-      // Complete the line
+      // Complete the line (13-digit EAN-13 barcode is valid)
       const chunk2 = parser.parse("socket-123", Buffer.from(",2000001025004,000,MEHMET,0000025000,0000015000,0000037500\n"));
       expect(chunk2.packets.length).toBe(1);
-      expect(chunk2.packets[0].type).toBe("unknown");
+      expect(chunk2.packets[0].type).toBe("weighing_event");
     });
 
     it("should handle unknown packets gracefully", () => {

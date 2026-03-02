@@ -412,8 +412,8 @@ export class ScaleParser {
     // Strip any leading/trailing quotes and whitespace
     let pluCode = barcode.replace(/^["']|["']$/g, "").trim();
     
-    // Validate PLU code format (accepts 12-digit barcode format or 5-digit format)
-    if (!pluCode || !/^\d{5,12}$/.test(pluCode)) {
+    // Validate PLU code format (accepts 5-13 digits: 5-digit PLU, 12-digit, or EAN-13 barcode)
+    if (!pluCode || !/^\d{5,13}$/.test(pluCode)) {
       log("debug", `Invalid PLU code (from barcode field): ${pluCode}`);
       return null;
     }

@@ -43,6 +43,14 @@ interface SyncConfig {
 /** Events in "streaming" longer than this are reset to "pending" for retry */
 const STUCK_STREAMING_MS = 5 * 60 * 1000; // 5 minutes
 
+/** Result of posting a batch (per-event counts, not just HTTP success) */
+interface BatchPostResult {
+  synced: number;
+  failed: number;
+  httpSuccess: boolean;
+  error?: string;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // CLOUD SYNC SERVICE CLASS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -294,12 +302,11 @@ export class CloudSyncService {
         }
       } else {
         // Multiple events - send as batch
-        const success = await this.postEventBatch(batch);
-        if (success) {
-          result.synced += batch.length;
-        } else {
-          result.failed += batch.length;
-          result.errors.push(`Failed to send batch of ${batch.length} events`);
+        const batchResult = await this.postEventBatch(batch);
+        result.synced += batchResult.synced;
+        result.failed += batchResult.failed;
+        if (!batchResult.httpSuccess && batchResult.error) {
+          result.errors.push(batchResult.error);
         }
       }
     }
@@ -310,8 +317,9 @@ export class CloudSyncService {
 
   /**
    * Post batch of events to Cloud
+   * Returns per-event synced/failed counts (not just HTTP success)
    */
-  private async postEventBatch(events: WeighingEvent[]): Promise<boolean> {
+  private async postEventBatch(events: WeighingEvent[]): Promise<BatchPostResult> {
     const restClient = getRestClient();
     const eventProcessor = getEventProcessor();
 
@@ -319,7 +327,7 @@ export class CloudSyncService {
       events.forEach(event => {
         eventProcessor.markEventFailed(event.id, "REST client not available");
       });
-      return false;
+      return { synced: 0, failed: events.length, httpSuccess: false, error: "REST client not available" };
     }
 
     // Get device info
@@ -357,13 +365,12 @@ export class CloudSyncService {
 
       // Validate batch response – require one result per event to avoid stuck "streaming"
       if (!response?.results || response.results.length !== events.length) {
-        console.warn(
-          `[SyncService] Batch response incomplete (got ${response?.results?.length ?? 0}, expected ${events.length}), will retry`
-        );
+        const msg = `Batch response incomplete (got ${response?.results?.length ?? 0}, expected ${events.length})`;
+        console.warn(`[SyncService] ${msg}, will retry`);
         events.forEach(event => {
-          eventProcessor.markEventFailed(event.id, "Batch response incomplete");
+          eventProcessor.markEventFailed(event.id, msg);
         });
-        return false;
+        return { synced: 0, failed: events.length, httpSuccess: true, error: msg };
       }
 
       const resultIds = new Set<string>();
@@ -392,6 +399,8 @@ export class CloudSyncService {
       console.log(
         `[SyncService] Batch result: accepted=${accepted}, duplicate=${duplicate}, failed=${failed} (${payloads.length} events)`
       );
+
+      const syncedCount = accepted + duplicate;
 
       // Offline batch ACK: for batches whose events are all synced, notify Cloud and mark reconciled
       const offlineBatchManager = getOfflineBatchManager();
@@ -429,14 +438,19 @@ export class CloudSyncService {
         }
       }
 
-      return true;
+      return { synced: syncedCount, failed, httpSuccess: true };
     } catch (error) {
-      // Failed to post batch
+      // Failed to post batch (HTTP error)
       const errorMessage = error instanceof Error ? error.message : String(error);
       events.forEach(event => {
         eventProcessor.markEventFailed(event.id, `Batch POST failed: ${errorMessage}`);
       });
-      return false;
+      return {
+        synced: 0,
+        failed: events.length,
+        httpSuccess: false,
+        error: `Failed to send batch of ${events.length} events: ${errorMessage}`,
+      };
     }
   }
 

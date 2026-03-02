@@ -17,6 +17,7 @@
  */
 
 import { networkInterfaces } from "os";
+import { existsSync } from "fs";
 import { config } from "./config.ts";
 import {
   initDatabase,
@@ -153,14 +154,10 @@ function getPrimaryLocalIp(): string {
 
 /**
  * Check if we're likely running inside a Docker container (sync .dockerenv check only).
+ * Uses fs.existsSync because Bun.file() does not throw when the file doesn't exist.
  */
 function isRunningInDocker(): boolean {
-  try {
-    Bun.file("/.dockerenv");
-    return true;
-  } catch {
-    return false;
-  }
+  return existsSync("/.dockerenv");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
