@@ -8,7 +8,7 @@
 # WHAT IT DOES:
 #   1. Detects your local IP address automatically
 #   2. Starts the mock REST server (for testing)
-#   3. Builds and starts the Edge service in Docker
+#   3. Builds and starts the Edge service in Docker (restart: unless-stopped)
 #   4. Shows logs and connection information
 #
 # PREREQUISITES:
@@ -270,6 +270,7 @@ cmd_start() {
     show_network_info
     
     echo -e "${GREEN}${BOLD}Everything is running!${NC}"
+    echo -e "${BLUE}(Container restart: unless-stopped)${NC}"
     echo ""
     echo -e "View logs:        ${CYAN}$0 logs${NC}"
     echo -e "Check status:     ${CYAN}$0 status${NC}"
@@ -494,6 +495,7 @@ cmd_prod() {
     if [ $? -eq 0 ]; then
         echo ""
         echo -e "${GREEN}✓ Production Edge deployed${NC}"
+        echo -e "${BLUE}(Container restart: always)${NC}"
         echo ""
         echo -e "${BOLD}Connection Info:${NC}"
         echo -e "  Scales connect to: ${CYAN}$ip:8899${NC}"

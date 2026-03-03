@@ -4,6 +4,8 @@
 
 The Edge service is the on-premise component of CarniTrack that runs at meat processing facilities. It connects to DP-401 industrial scales, captures weighing events, and streams them to the Cloud in real-time. Sessions are managed by the Cloud, not the Edge.
 
+**Setup:** Run `bun scripts/create-env.ts` then `./scripts/docker-setup.sh prod`.
+
 ## 🏗️ Architecture Overview (v3.0 Cloud-Centric)
 
 ```
@@ -13,13 +15,13 @@ The Edge service is the on-premise component of CarniTrack that runs at meat pro
 │                                                                                       │
 │   📱 Phone App                    ☁️ Cloud                        🏭 Edge             │
 │   ┌─────────────┐                ┌─────────────┐                 ┌─────────────┐     │
-│   │  Operator   │    REST/SSE    │   Django    │    WebSocket    │   Bun.js    │     │
+│   │  Operator   │    REST/SSE   │   Backend   │    REST API     │   Bun.js    │     │
 │   │  Start/End  │───────────────►│   Postgres  │◄───────────────►│   SQLite    │     │
-│   │  Sessions   │◄───────────────│   Session   │                 │   Events    │     │
+│   │  Sessions   │◄───────────────│   Session   │   (poll + POST) │   Events    │     │
 │   └─────────────┘                │   Manager   │                 └──────┬──────┘     │
-│                                  └─────────────┘                        │TCP         │
+│                                  └─────────────┘                        │ TCP :8899  │
 │                                         │                               │            │
-│                                         │ Push Session                  ▼            │
+│                                         │ Sessions (poll)                ▼            │
 │                                         └─────────────────────►   ┌─────────┐        │
 │                                                                   │ SCALE-01│        │
 │   Key: Edge does NOT manage sessions                              │ SCALE-02│        │
@@ -37,77 +39,82 @@ The Edge service is the on-premise component of CarniTrack that runs at meat pro
 | **❤️ Health Monitoring** | Hardware heartbeat tracking (HB every 30s) |
 | **📝 Device Registration** | Auto-identification via SCALE-XX packets |
 | **⚖️ Event Capture** | Real-time weight event parsing and storage |
-| **🔄 WebSocket Streaming** | Real-time events to Cloud (2-3 sec latency) |
+| **🔄 REST Streaming** | Events to Cloud via REST API (batch + real-time POST) |
 | **📴 Offline Resilience** | Batch events when Cloud unreachable |
 | **🔗 Session Cache** | Cloud sessions cached locally |
 | **🛠️ Admin Dashboard** | Minimal UI for debugging/monitoring |
 
-## 🚀 Quick Start
+## 🚀 How to Use
 
-### Option 1: Docker (Recommended)
+**Prerequisites:** [Bun](https://bun.sh) and [Docker](https://www.docker.com/products/docker-desktop).
+
+### 1. Create environment file
+
+Run the env generator with Bun (quick mode asks for `SITE_ID` and `EDGE_NAME`; you can add `REGISTRATION_TOKEN` later):
 
 ```bash
-# Clone the repository
-git clone https://github.com/KKBalta/carnitrack-edge.git
-cd carnitrack-edge
-
-# Copy and configure environment
-cp .env.example .env
-# Edit .env with your site details
-
-# Start with Docker Compose
-docker compose up -d
-
-# View logs
-docker compose logs -f carnitrack-edge
+bun scripts/create-env.ts
 ```
 
-### Option 2: Local Development
+Options:
+- `bun scripts/create-env.ts --template` — generate template only (no prompts)
+- `bun scripts/create-env.ts --full` — full interactive (all variables)
+- `bun scripts/create-env.ts -o .env.local` — custom output file
+- `bun scripts/create-env.ts -y` — skip overwrite confirmation
+
+### 2. Run with Docker
+
+Use the setup script to build and run everything:
 
 ```bash
-# Clone the repository
-git clone https://github.com/KKBalta/carnitrack-edge.git
-cd carnitrack-edge
+./scripts/docker-setup.sh prod
+```
 
-# Install dependencies
+That’s it. The script uses your `.env`, builds the image, and starts the Edge service in Docker.
+
+**Useful commands:**
+
+| Command | Description |
+|--------|-------------|
+| `./scripts/docker-setup.sh prod` | Deploy production Edge (uses `.env`) |
+| `./scripts/docker-setup.sh prod-stop` | Stop production Edge |
+| `./scripts/docker-setup.sh start` | Test mode: mock Cloud + Edge container |
+| `./scripts/docker-setup.sh stop` | Stop test services |
+| `./scripts/docker-setup.sh status` | Show service status |
+| `./scripts/docker-setup.sh logs` | Follow Edge container logs |
+| `./scripts/docker-setup.sh env` | Create/edit `.env` (test defaults) |
+| `./scripts/docker-setup.sh help` | Show all commands |
+
+### Local development (without Docker)
+
+```bash
 bun install
-
-# Start development server
 bun run dev
 ```
 
 ## 🐳 Docker Deployment
 
-### Build and Run
+For normal use, create `.env` with `bun scripts/create-env.ts` then run `./scripts/docker-setup.sh prod`. For manual control:
+
+### Build and Run (manual)
 
 ```bash
-# Build the image
+# After creating .env with: bun scripts/create-env.ts
 docker build -t carnitrack-edge .
-
-# Run with environment variables
-docker run -d \
-  --name carnitrack-edge \
-  -p 3000:3000 \
-  -p 3001:3001 \
-  -v carnitrack-data:/app/data \
-  -e EDGE_SITE_ID=site-001 \
-  -e EDGE_SITE_NAME="Main Facility" \
-  -e CLOUD_WS_URL=wss://api.carnitrack.cloud/edge/ws \
-  -e CLOUD_API_KEY=your-api-key \
-  carnitrack-edge
+docker compose up -d
 ```
 
-### Docker Compose (Recommended)
+### Docker Compose
 
 ```bash
-# Start services
+# Start (loads .env from project root)
 docker compose up -d
 
-# Stop services
+# Stop
 docker compose down
 
 # View logs
-docker compose logs -f
+docker compose logs -f carnitrack-edge
 
 # Restart after config change
 docker compose up -d --force-recreate
@@ -131,22 +138,21 @@ docker volume ls | grep carnitrack
 
 ## ⚙️ Configuration
 
-### Environment Variables
+Environment variables are set in `.env`, created by `bun scripts/create-env.ts`. Main options:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | **Edge Identity** |
-| `EDGE_SITE_ID` | - | Site ID (required for registration) |
-| `EDGE_SITE_NAME` | - | Human-readable site name |
+| `SITE_ID` | - | Site ID (required for Cloud registration) |
+| `EDGE_NAME` | - | Human-readable edge/site name |
+| `REGISTRATION_TOKEN` | - | Site registration token (can add later) |
 | **Cloud Connection** |
-| `CLOUD_WS_URL` | `wss://api.carnitrack.cloud/edge/ws` | WebSocket endpoint |
-| `CLOUD_API_URL` | `https://api.carnitrack.cloud` | REST API endpoint |
-| `CLOUD_API_KEY` | - | API key for authentication |
+| `CLOUD_API_URL` | (see create-env) | Cloud REST API base URL |
 | **Servers** |
-| `TCP_PORT` | `3001` | Port for scale connections |
+| `TCP_PORT` | `8899` | Port for scale connections |
 | `HTTP_PORT` | `3000` | Port for admin dashboard |
 | **Database** |
-| `DATABASE_PATH` | `./data/carnitrack.db` | SQLite database path |
+| `DB_PATH` | `data/carnitrack.db` | SQLite database path |
 | **Logging** |
 | `LOG_LEVEL` | `info` | debug, info, warn, error |
 
@@ -158,7 +164,7 @@ Configure each DP-401 scale's WiFi module:
 |---------|-------|-------------|
 | Protocol | **TCP-Client** | Scale connects TO edge |
 | Server Address | **192.168.1.X** | Edge computer's IP |
-| Port | **3001** | Edge TCP server port |
+| Port | **8899** | Edge TCP server port (`TCP_PORT`) |
 | Register Package Enable | **ON** | Enable device ID |
 | Register Package Data | **SCALE-XX** | Unique per device |
 | Register Package Send Mode | **link** | Send on connection |
@@ -176,7 +182,7 @@ carnitrack-edge/
 │   ├── devices/              # TCP server & device management
 │   ├── sessions/             # Session cache (from Cloud)
 │   ├── storage/              # SQLite database
-│   ├── cloud/                # WebSocket client to Cloud
+│   ├── cloud/                # REST client to Cloud
 │   ├── plu/                  # PLU file generation
 │   └── api/                  # Admin dashboard API
 │
@@ -254,20 +260,19 @@ Access at `http://localhost:3000`
 
 ### Key Integration Points
 
-1. **WebSocket Connection** - Edge connects to Cloud via WebSocket (`ws://your-cloud/edge`)
-2. **Message Protocol** - Bidirectional message protocol for events, sessions, devices
-3. **Session Management** - Cloud manages sessions, Edge caches for offline use
-4. **Event Streaming** - Real-time event streaming with acknowledgments
-5. **Offline Batches** - Automatic batch creation and reconciliation
+1. **REST API** - Edge connects to Cloud via REST (`CLOUD_API_URL`); no WebSocket.
+2. **Registration** - Edge registers with `SITE_ID` and optional `REGISTRATION_TOKEN`.
+3. **Session Management** - Cloud manages sessions; Edge polls for active sessions and caches them.
+4. **Event Streaming** - Events sent via REST POST; batch upload for offline backlog.
+5. **Offline Batches** - Automatic batch creation and reconciliation when Cloud is unreachable.
 
 ### Quick Start for Cloud Developers
 
-1. Set up WebSocket server on `/edge` endpoint
-2. Handle Edge registration (`register` message)
-3. Send active sessions on connection (`session_started` messages)
-4. Process events (`event` messages) and acknowledge (`event_ack`)
-5. Manage sessions (`session_started`, `session_ended`)
-6. Handle offline batches (`offline_batch_end`)
+1. Expose REST API for Edge: registration, sessions (GET), event (POST), batch (POST).
+2. Handle Edge registration (site/edge identity).
+3. Provide active sessions endpoint for polling.
+4. Accept event and batch POSTs; return acknowledgments.
+5. Support offline batch upload and reconciliation.
 
 See [CLOUD_INTEGRATION.md](CLOUD_INTEGRATION.md) for detailed implementation guide.
 
