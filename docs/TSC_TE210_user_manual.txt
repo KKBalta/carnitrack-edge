@@ -1,0 +1,2010 @@
+TE200/TE210/TE300/TE310 Series
+
+THERMAL TRANSFER/DIRECT THERMAL BAR
+CODE PRINTER
+
+
+                              USER’S
+                             MANUAL
+
+
+
+
+                 i
+Copyright Information
+
+
+   ©2017 TSC Auto ID Technology Co., Ltd,
+   The copyright in this manual, the software, and firmware in the printer described
+   therein are owned by TSC Auto ID Technology Co., Ltd, All rights reserved.
+
+
+   CG Triumvirate is a trademark of Agfa Corporation. CG Triumvirate Bold
+   Condensed font is under license from the Monotype Corporation. Windows is a
+   registered trademark of Microsoft Corporation.
+   All other trademarks are the property of their respective owners.
+
+
+   Information in this document is subject to change without notice and does not
+   represent a commitment on the part of TSC Auto ID Technology Co. No part of
+   this manual may be reproduced or transmitted in any form or by any means, for
+   any purpose other than the purchaser’s personal use, without the expressed
+   written permission of TSC Auto ID Technology Co.
+
+
+
+
+                                         ii
+Agency Compliance and Approvals
+
+            TE200/TE300 Series:
+            EN 55032, Class A
+            EN 55024
+            EN 60950-1
+           This is a class A product. In a domestic environment this product may cause
+           radio interference in which case the user may be required to take adequate
+           measures.
+
+            TE210/TE310 Series:
+            EN 55032, Class B
+            EN 55024
+            EN 61000-3-2
+            EN 61000-3-3
+            EN 60950-1
+            TE200/TE300 Series:
+            FCC part 15B, Class A
+            ICES-003, Class A
+
+            This equipment has been tested and found to comply with the limits for a
+            Class A digital device, pursuant to Part 15 of the FCC Rules. These limits
+            are designed to provide reasonable protection against harmful interference
+            when the equipment is operated in a commercial environment.
+            This equipment generates, uses, and can radiate radio frequency energy
+            and, if not installed and used in accordance with the manufacturer’s
+            instruction manual, may cause harmful interference with radio
+            communications. Operation of this equipment in a residential area is likely to
+            cause harmful interference, in which case you will be required to correct the
+            interference at your own expense.
+
+            This Class A digital apparatus complies with Canadian ICES-003.
+            Cet appareil numérique de la classe A est conform à la norme NMB-003
+            du Canada.
+
+            This device complies with Part 15 of the FCC Rules. Operation is subject to
+            the following two conditions: (1) This device may cause harmful
+            interference, and (2) this device must accept any interference received,
+            including interference that may cause undesired operation.
+
+           TE210/TE310 Series:
+           FCC part 15B, Class B
+           This equipment has been tested and found to comply with the limits for a
+           Class B digital device, pursuant to part 15 of the FCC Rules. These limits are
+           designed to provide reasonable protection against harmful interference in a
+           residential installation. This equipment generates, uses and can radiate radio
+           frequency energy and, if not installed and used in accordance with the
+           instructions, may cause harmful interference to radio communications.
+           However, there is no guarantee that interference will not occur in a particular
+           installation. If this equipment does cause harmful interference to radio or
+           television reception, which can be determined by turning the equipment off
+           and on, the user is encouraged to try to correct the interference by one or
+           more of the following measures:
+
+                                      iii
+-Reorient or relocate the receiving antenna.
+-Increase the separation between the equipment and receiver.
+-Connect the equipment into an outlet on a circuit different from that to which the receiver is
+connected.
+-Consult the dealer or an experienced radio/ TV technician for help.
+
+This device complies with Part 15 of the FCC Rules. Operation is subject to
+the following two conditions: (1) This device may cause harmful interference,
+and (2) this device must accept any interference received, including
+interference that may cause undesired operation.
+
+This Class B digital apparatus complies with Canadian ICES-003
+Cet appareil numérique de la classe B est conforme à la norme
+NMB-003 du Canada.
+TE200/TE300 Series:
+AS/NZS CISPR 32, Class A
+
+TE210/TE310 Series:
+AS/NZS CISPR 32, Class B
+
+ UL 60950-1
+ CSA C22.2 No. 60950-1-07
+
+
+ EN 60950-1
+
+
+TE200/TE300 Series:
+GB 4943.1
+GB 9254, Class A
+GB 17625.1
+此为 A 级产品，在生活环境中，该产品可能会造成无线电干扰，
+在这种情况下，可能需要用户对干扰采取切实可行的措施。
+
+TE210/TE310 Series:
+GB 4943.1
+GB 9254, Class B
+GB 17625.1
+
+Energy Star for Imaging Equipment Version 2.0
+
+
+TP TC 004
+TP TC 020
+
+
+ IS 13252(Part 1)/
+ IEC 60950-1
+
+
+
+
+                                 iv
+                     KN 32
+                     KN 35
+
+Note: There may have certification differences in the series models, please refer to product label for accuracy.
+Important safety instructions:
+1. Read all of these instructions and keep them for later use.
+2. Follow all warnings and instructions on the product.
+3. Disconnect the power plug from the AC outlet before cleaning or if fault happened.
+  Do not use liquid or aerosol cleaners. Using a damp cloth is suitable for cleaning.
+4. The mains socket shall be installed near the equipment and easily accessible.
+5. The unit must be protected against moisture.
+6. Ensure the stability when installing the device, Tipping or dropping could cause damage.
+7. Make sure to follow the correct power rating and power type indicated on marking label
+  provided by manufacture.
+8. Please refer to user manual for maximum operation ambient temperature.
+
+
+WARNING:
+Hazardous moving parts, keep fingers and other body parts away.
+
+
+CAUTION:
+(For equipment with RTC (CR2032) battery or rechargeable battery pack)
+Risk of explosion if battery is replaced by an incorrect type.
+Dispose of used batteries according to the Instructions as below.
+1. DO NOT throw the battery in fire.
+2. DO NOT short circuit the contacts.
+3. DO NOT disassemble the battery.
+4. DO NOT throw the battery in municipal waste.
+5. The symbol of the crossed out wheeled bin indicates that the battery should not be
+    placed in municipal waste.
+
+
+
+        Caution: The printhead may be hot and could cause severe burns. Allow the
+printhead to cool.
+
+CAUTION:
+Any changes or modifications not expressly approved by the grantee of this device
+could void the user's authority to operate the equipment.
+
+
+
+
+                                                   v
+CE Statement:
+This equipment complies with EU radiation exposure limits set forth for an
+uncontrolled environment. This equipment should be installed and operated with
+minimum distance 20 cm between the radiator & your body.
+All operational modes:
+2.4GHz: 802.11b, 802.11g, 802.11n (HT20), 802.11n (HT40)
+5GHz: 802.11a,
+
+
+The frequency, mode and the maximum transmitted power in EU are listed below:
+2400 MHz – 2483.5 MHz: 19.88 dBm (EIRP)
+5150 MHz – 5250 MHz: 17.51 dBm (EIRP)
+
+
+5150-5350MHz for Only indoor use
+5470-5725MHz for indoor/outdoor use
+
+
+Restrictions In AZE
+National restrictions information is provided below
+Frequency Band            Country                       Remark
+
+  5150-5350MHz                         No license needed if used indoor and
+                         Azerbaijan
+  5470-5725MHz                               power not exceeding 30mW
+
+
+Hereby, TSC Auto ID Technology Co., Ltd. declares that the radio equipment type
+[Wi-Fi] IEEE 802.11 a/b/g/n is in compliance with Directive 2014/53/EU
+The full text of the EU declaration of conformity is available at the following internet
+address: http:// www.tscprinters.com
+
+
+RF exposure warning (Wi-Fi)
+This equipment must be installed and operated in accordance with provided
+instructions and must not be co-located or operating in conjunction with any other
+antenna or transmitter. End-users and installers must be providing with antenna
+installation instructions and transmitter operating conditions for satisfying RF
+exposure compliance.
+SAR Value: 0.736 W/kg
+
+
+RF exposure warning (For Bluetooth)
+The equipment complies with FCC RF exposure limits set forth for an uncontrolled
+environment.
+
+
+
+                                            vi
+The equipment must not be co-located or operating in conjunction with any other
+antenna or transmitter.
+
+
+Canada, Industry Canada (IC) Notices
+This Class B digital apparatus complies with Canadian ICES-003 and RSS-210.
+Operation is subject to the following two conditions: (1) this device may not cause
+interference, and (2) this device must accept any interference, including interference
+that may cause undesired operation of the device.
+
+
+Radio Frequency (RF) Exposure Information
+The radiated output power of the Wireless Device is below the Industry Canada (IC)
+radio frequency exposure limits. The Wireless Device should be used in such a
+manner such that the potential for human contact during normal operation is
+minimized.
+
+
+This device has been evaluated for and shown compliant with the IC Specific
+Absorption Rate (“SAR”) limits when installed in specific host products operated in
+portable exposure conditions. (For Wi-Fi)
+
+
+This device has also been evaluated and shown compliant with the IC RF Exposure
+limits under portable exposure conditions. (Antennas are less than 20 cm of a
+person's body). (For Bluetooth)
+
+
+Canada, avis de l'Industry Canada (IC)
+Cet appareil numérique de classe B est conforme aux normes canadiennes ICES-003
+et RSS-210.
+Son fonctionnement est soumis aux deux conditions suivantes : (1) cet appareil ne
+doit pas causer d'interférence et (2) cet appareil doit accepter toute interférence,
+notamment les interférences qui peuvent affecter son fonctionnement.
+Informations concernant l'exposition aux fréquences radio (RF)
+La puissance de sortie émise par l’appareil sans fil est inférieure à la limite
+d'exposition aux fréquences radio de l'Industry Canada (IC). Utilisez l’appareil sans fil
+de façon à minimiser les contacts humains lors du fonctionnement normal.
+
+
+Ce périphérique a été évalué et démontré conforme aux limites SAR (Specific
+Absorption Rate – Taux d'absorption spécifique) par l'IC lorsqu'il est connecté à des
+dispositifs hôtes spécifiques opérant dans des conditions d’utilisation mobile. (Pour le
+Wi-Fi)
+
+
+                                            vii
+Ce périphérique a également été évalué et démontré conforme aux limites
+d'exposition radio-fréquence par l'IC pour des utilisations par des opérateurs mobiles
+(les antennes sont à moins de 20 cm du corps d'une personne). (Pour le Bluetooth)
+
+
+NCC 警語:
+經型式認證合格之低功率射頻電機，非經許可，公司、商號或使用者均不得擅自變更頻
+率、加大功率或變更原設計之特性及功能。(即低功率電波輻射性電機管理辦法第十二
+條)
+低功率射頻電機之使用不得影響飛航安全及干擾合法通信；經發現有干擾現象時，應立
+即停用，並改善至無干擾時方得繼續使用。
+前項合法通信，指依電信法規定作業之無線電通信。低功率射頻電機須忍受合法通信或
+工業、科學及醫療用電波輻射性電機設備之干擾。(即低功率電波輻射性電機管理辦法
+第十四條)
+
+
+BSMI Class A 警語:
+這是甲類的資訊產品，在居住的環境使用中時，可能會造成射頻 干擾，在這種情況下，
+使用者會被要求採取某些適當的對策。
+
+
+Model Name                                  Resolution     Print Speed
+TE200 series
+                                                 203 dpi   Up to 6 IPS
+
+TE300 series
+                                                 300 dpi   Up to 5 IPS
+
+
+
+
+                                          viii
+設備名稱 Equipment name：熱轉式/熱感式條碼印表機，
+ 型號（型式） Type designation (Type)： TE200 系列
+                                                            限用物質及其化學符號
+                                                   Restricted substances and its chemical symbols
+
+  單元Ｕnit                                                                     六價鉻              多溴聯苯                 多溴二苯醚
+                      鉛Lead          汞Mercury          鎘Cadmium            Hexavalent      Polybrominated Polybrominated
+                       (Pb)           (Hg)               (Cd)              chromium           biphenyls   diphenyl ethers
+                                                                              (Cr+6 )            (PBB)                (PBDE)
+ 內外塑膠件                   ○                ○                  ○                  ○                  ○                     ○
+ 內外鐵件                    ○                ○                  ○                  ○                  ○                     ○
+     滾輪                  ○                ○                  ○                  ○                  ○                     ○
+ 電路板組件                    -               ○                  ○                  ○                  ○                     ○
+ 晶片電阻                     -               ○                  ○                  ○                  ○                     ○
+積層陶瓷表面
+                         ○                ○                  ○                  ○                  ○                     ○
+ 黏著電容
+集成電路-IC                  ○                ○                  ○                  ○                  ○                     ○
+ 電源供應器                   ○                ○                  ○                  ○                  ○                     ○
+   印字頭                   ○                ○                  ○                  ○                  ○                     ○
+     馬達                   -               ○                  ○                  ○                  ○                     ○
+     插座                  ○                ○                  ○                  ○                  ○                     ○
+     線材                  ○                ○                  ○                  ○                  ○                     ○
+
+備考1.〝超出0.1 wt %〞及〝超出0.01 wt %〞係指限用物質之百分比含量超出百分比含量基準值。
+ Note 1：“Exceeding 0.1 wt %” and “exceeding 0.01 wt %” indicate that the percentage content of the restricted substance exceeds the
+         reference percentage value of presence condition.
+備考2.〝○〞係指該項限用物質之百分比含量未超出百分比含量基準值。
+ Note 2：“○” indicates that the percentage content of the restricted substance does not exceed the percentage of reference value of
+         presence.
+備考3.〝－〞係指該項限用物質為排除項目。
+ Note 3：The “−” indicates that the restricted substance corresponds to the exemption.
+
+
+
+
+                                                                 ix
+For MFi Bluetooth
+
+
+
+Use of the Made for Apple badge means that an accessory has been designed to connect
+specifically to the Apple product(s) identified in the badge, and has been certified by the
+developer to meet Apple performance standards. Apple is not responsible for the operation of
+this device or its compliance with safety and regulatory standards.
+
+
+For US Model
+Made for iPhone®XS Max, iPhone XS, iPhone XR, iPhone X, iPhone 8, iPhone 8 Plus,
+iPhone 7, iPhone 7 Plus, iPhone SE, iPhone 6s, iPhone 6s Plus, iPhone 6, iPhone 6 Plus,
+iPhone 5s, iPad Pro® 12.9-inch (2nd generation), iPad Pro 10.5-inch, iPad® (6th generation),
+iPad (5th generation), iPad Pro 9.7-inch, iPad Pro 12.9-inch (1st generation), iPad Air® 2,
+iPad mini™ 4, iPad mini 3, iPad Air, iPad mini 2, iPod touch® (6th generation)
+iPad, iPad Air, iPad Pro, iPhone are trademarks of Apple Inc., registered in the U.S. and other
+countries.
+
+
+For JP Model
+Made for iPhone XS Max, iPhone XS, iPhone XR, iPhone X, iPhone 8, iPhone 8 Plus,
+iPhone 7, iPhone 7 Plus, iPhone SE, iPhone 6s, iPhone 6s Plus, iPhone 6, iPhone 6 Plus,
+iPhone 5s, iPad Pro 12.9-inch (2nd generation), iPad Pro 10.5-inch, iPad (6th generation),
+iPad (5th generation), iPad Pro 9.7-inch, iPad Pro 12.9-inch (1st generation), iPad Air 2,
+iPad mini 4, iPad mini 3, iPad Air, iPad mini 2, iPod touch (6th generation)
+
+iPad, iPad Air, iPad Pro, iPhone are trademarks of Apple Inc., registered in the U.S. and other
+countries. The trademark “iPhone” is used in Japan with a license from Aiphone K.K.
+
+
+Except for US, JP Model
+Made for iPhone XS Max, iPhone XS, iPhone XR, iPhone X, iPhone 8, iPhone 8 Plus,
+iPhone 7, iPhone 7 Plus, iPhone SE, iPhone 6s, iPhone 6s Plus, iPhone 6, iPhone 6 Plus,
+iPhone 5s, iPad Pro 12.9-inch (2nd generation), iPad Pro 10.5-inch, iPad (6th generation),
+iPad (5th generation), iPad Pro 9.7-inch, iPad Pro 12.9-inch (1st generation), iPad Air 2,
+iPad mini 4, iPad mini 3, iPad Air, iPad mini 2, iPod touch (6th generation)
+iPad, iPad Air, iPad Pro, iPhone are trademarks of Apple Inc., registered in the U.S. and other
+countries.
+
+
+
+
+                                                x
+                                                   Contents
+
+1. Introduction ..........................................................................................................1
+1.1 Product Introduction ......................................................................................... 1
+1.2 Product Features ............................................................................................... 2
+       1.2.1 Printer Standard Features ...................................................................... 2
+       1.2.2 Printer Optional Features ....................................................................... 3
+       1.2.3 Label Print Module Features (Optional) ................................................ 4
+1.3 General Specifications ...................................................................................... 5
+1.4 Print Specifications ............................................................................................5
+1.5 Ribbon Specifications........................................................................................6
+1.6 Media Specifications ..........................................................................................6
+2. Operations Overview ...........................................................................................7
+2.1 Unpacking and Inspection ................................................................................ 7
+2.2 Printer Overview ................................................................................................ 8
+       2.2.1 Front View ............................................................................................... 8
+       2.2.2 Interior View ............................................................................................ 9
+       2.2.3 Rear View ................................................................................................ 9
+3. Setup ...................................................................................................................10
+3.1 Setting up the Printer ...................................................................................... 10
+3.2 Loading the Ribbon......................................................................................... 11
+3.3 Loading the Media ........................................................................................... 14
+       3.3.1 Loading the Roll Labels ....................................................................... 14
+       3.3.2 External Label Roll Mount Installation (Option).................................. 17
+       3.3.3 Loading the Media in Cutter mode (TE210/TE310 Series only, dealer
+       option) ............................................................................................................ 19
+       3.3.4 Loading the Media in Peel-off Mode (TE210/TE310 Series only, dealer
+       option) ............................................................................................................ 21
+3.4 Installing the Print Engine (Option)................................................................ 23
+4. LED and Button Functions ...............................................................................24
+4.1 LED Indicator ................................................................................................... 24
+4.2 Regular Button Functions .............................................................................. 24
+4.3 Power-on Utilities ............................................................................................ 24
+       4.3.1 Gap/Black Mark Sensor Calibration .................................................... 25
+       4.3.2 Gap/Black Mark Calibration, Self-test and Dump Mode ..................... 26
+       4.3.3 Printer Initialization .............................................................................. 29
+
+
+
+
+                                                             xi
+      4.3.4 Set Black Mark Sensor as Media Sensor and Calibrate the Black Mark
+      Sensor ............................................................................................................ 30
+      4.3.5 Set Gap Sensor as Media Sensor and Calibrate the Gap Sensor ...... 30
+      4.3.6 Skip AUTO.BAS .................................................................................... 31
+5. Diagnostic Tool ..................................................................................................32
+5.1 Start the Diagnostic Tool ................................................................................ 32
+5.2 Printer Function .............................................................................................. 33
+5.3 Calibrating Media Sensor by Diagnostic Tool ................................................34
+5.4 Setting Wi-Fi by Diagnostic Tool (Optional) .................................................. 35
+5.5 Setting Bluetooth by Diagnostic Tool (Optional) .......................................... 36
+6. Troubleshooting .................................................................................................37
+6.1 Common Problems ......................................................................................... 37
+7. Maintenance .......................................................................................................39
+Revise History ........................................................................................................41
+
+
+
+
+                                                            xii
+1. Introduction
+
+1.1 Product Introduction
+    Thank you very much for purchasing TSC bar code printer.
+
+
+    The TE200/TE210/TE300/TE310 series printer features the single motor that is capable of
+    handling a large capacity of 300 meters ribbon and large rolls of media inside its sleek design. If
+    the 5” interior label capacity is not enough, simply add an external media roll mount and the TE
+    series can easily handle 8” OD rolls of labels designed for expensive industrial label printers.
+
+
+    To meet the various printing requirements, TE200/TE300 and TE210/TE310 series provides
+    different memory capacity. Moreover, TE210/TE310 series have optional peel-off and cutter kits
+    for users to purchase. The movable black mark sensor design can accept a wide range of label
+    media. All of the most frequently used bar code formats are included. Fonts and bar codes can
+    be printed in any one of the four directions.
+
+
+    The TE200/TE210/TE300/TE310 series printer is built-in the high quality, high-performance
+    MONOTYPE IMAGING® True Type font engine and one CG Triumvirate Bold Condensed
+    smooth font. With flexible firmware design, user can also download the True Type Font from PC
+    into printer memory for printing labels. Besides the scalable font, it also provides a choice of
+    eight different sizes of the alphanumeric bitmap font. By integrating rich features, it is the most
+    cost-effective and high-performance printer in its class!
+
+
+    To print label formats, please refer to the instructions provided with your labeling software; if you
+    need to write the custom programs, please refer to the TSPL/TSPL2 programming manual that
+    can be found on TSC website at http://www.tscprinters.com.
+
+•   Applications
+       o   Manufacturing & Warehousing                                    Specimen Identification
+                  Work in Progress                             o   Parcel Post
+                  Item Labels                                            Shipping/ Receiving Labels
+                  Instruction labels                           o   Small Office/ Home Office
+                  Agency labels                                o   Retail Marking
+       o   Healthcare                                                     Price tags
+                  Patient Identification                                 Shelf labels
+                  Pharmacy                                               Jewelry tags
+
+
+
+
+                                                      1
+   1.2 Product Features
+   1.2.1 Printer Standard Features
+          The printer offers the following standard features.
+                                                                 TE200      TE300      TE210      TE310
+Product standard feature                                        (203 dpi   (300 dpi   (203 dpi   (300 dpi
+                                                                 model)     model)     model)     model)
+Thermal transfer printing                                          ○          ○          ○          ○
+Direct thermal printing                                           ○          ○          ○          ○
+Plastic                                                           ○          ○          ○          ○
+Gap sensor                                                        ○          ○          ○          ○
+Reflective, full-range moveable black mark sensor                 ○          ○          ○          ○
+Ribbon sensor                                                     ○          ○          ○          ○
+Head open sensor                                                  ○          ○          ○          ○
+USB 2.0 (Hi-Speed) interface                                      ○          ○          ○          ○
+16 MB DRAM memory                                                 ○          ○           -          -
+64 MB DRAM memory                                                  -          -         ○          ○
+8 MB Flash memory                                                 ○          ○           -          -
+128 MB Flash memory                                                -          -         ○          ○
+SD card reader (Reserve a PIN connector for updating
+                                                                   -          -          -          -
+firmware by card when doing maintenance.)
+RTC                                                                -          -         ○          ○
+BUZZER                                                             -          -         ○          ○
+One button for feed and pause                                     ○          ○          ○          ○
+One LED indicator for 3 colors                                    ○          ○          ○          ○
+Standard industry emulations right out of the box including
+                                                                  ○          ○          ○          ○
+Eltron® and Zebra® language support
+Internal 8 alpha-numeric bitmap fonts                             ○          ○          ○          ○
+Fonts and bar codes can be printed in any one of the four
+                                                                  ○          ○          ○          ○
+directions (0, 90,180, 270 degrees)
+Internal Monotype Imaging® true type font engine with one
+                                                                  ○          ○          ○          ○
+CG Triumvirate Bold Condensed scalable font
+Downloadable fonts from PC to printer memory                      ○          ○          ○          ○
+Downloadable firmware upgrades                                    ○          ○          ○          ○
+
+
+
+
+                                                       2
+Text, bar code, graphics/image printing (Please refer to the
+TSPL/TSPL2 programming manual for supporting code
+page)
+
+ Supported bar code                          Supported image
+ 1D bar code                  2D bar code
+ Code128UCC,                  GS1 DataBar,
+                                             BITMAP,
+ Code128         subsets      GS1            BMP,
+                                             PCX
+ A、B、C, EAN128,               DataMatrix,
+                                             (Max. 256 colors
+ Interleaved 2 of 5,          Maxicode,      graphics)
+ Interleaved 2 of 5           AZTEC,
+ with    check       digit,   PDF417, QR
+ Code39,        Code39        Code, Micro
+ with    check       digit,   PDF 417
+ Code93,         EAN13,
+ EAN8,              UPCA,
+                                                                    ○       ○        ○        ○
+ UPCE,       EAN      and
+ UPC     2    (5)    digits
+ add-on,       Codabar,
+ Postnet, MSI, MSI
+ with    check       digit,
+ PLESSEY,           China
+ post,              ITF14,
+ Code11, TELEPEN,
+ TELEPENN,
+ PLANET,       Code49,
+ Deutsche            Post
+ Identcode, Deutsche
+ Post          Leitcode,
+ LOGMARS
+
+
+   1.2.2 Printer Optional Features
+         The printer offers the following optional features.
+                                                                     User   Dealer Factory
+             Product option feature
+                                                                    options options options
+             Extended plate for external roll mount assembly with
+                                                                        ○
+             3” core label spindle (8.4 OD)
+             Internal Bluetooth v4.0                                                  ○
+             For TE210/TE310 Series only:
+             KP-200 Plus (with RS-232 interface)                        ○
+             External BT module (with RS-232 interface)                 ○
+             Peeler module                                                      ○
+
+                                                           3
+      Regular full cut cutter (Guillotine cutter)
+      Media thickness: 0.06~0.19 mm                                                 ○
+      Media type: receipt and label liner w/o glue
+      Regular full/partial cutter (Guillotine cutter)
+      Media thickness: 0.06~0.19 mm                                                 ○
+      Media type: receipt and label liner w/o glue
+      Internal Wi-Fi module                                                                     ○
+      Note: 1. Option for either internal Wi-Fi or internal Bluetooth only, not coexistence.
+            2. Except for the linerless cutter, all TSC regular/heavy duty/care label cutters DO NOT
+            cut on media with glue.
+
+
+1.2.3 Label Print Module Features (Optional)
+
+
+                                        Product option feature
+                   Resolution                 8 dots/mm (203 DPI)                12 dots/mm (300 DPI)
+                   Max. print speed          152.4 mm (6”)/second                  127 mm (5”)/second
+                   Max. print width              108 mm (4.25”)                     105.7 mm (4.16”)
+Print Module
+                   Physical                      196.0 mm (W) x 161.0 mm (L) x 145.0 mm (H)
+                   dimension                              (7.72” (W) x 6.34” (L) x 5.71” (H))
+                   Weight                                         1.43 kg (3.15 lbs)
+                   Memory                               128 MB Flash memory, 64 MB SDRAM
+                   Interface             USB2.0, RS-232, Internal Ethernet 10/100 Mbps, USB host
+Platform
+                   Real time clock                                     Option
+                   Buzzer                                             Standard
+                   Input                                    AC 100-240V, 2.5A, 50-60Hz
+Power Supply
+                   Output                                        DC 24V, 2.5A, 60W
+                   Media type                  Continuous, black mark, die-cut, notched, fan-fold
+                   Media wound type                                Outside wound
+Supported Media Media width                                   20 ~ 112 mm (0.8” ~ 4.4”)
+                   Min. media length                                 5 mm (0.2”)
+                   Media thickness                       0.06mm ~ 0.19 mm (2.36 ~ 7.48 mil)
+                   Ribbon type                               WAX, RESIN, WAX-RESIN
+                   Wound type                                      Outside wound
+Support Ribbon Ribbon width                                   40 ~ 110 mm (1.6” ~ 4.3”)
+                                          300 m long, max. OD 67 mm, 1” core (ink coated outside)
+                   Ribbon capacity
+                                         110 m long, max. OD 40 mm, 0.5” core (ink coated outside)
+                                         1” label spindle, fixing tab x 2, 1.5” adapter x 2
+Accessory          Standard              1” ribbon spindle x 2 for 300M ribbon
+                                         1” ribbon paper core
+
+
+                                                    4
+                                         Peel-off module
+                                         Guillotine cutter (full cut and partial cut)
+                     Optional
+                                         External roll mount, media OD. 214 mm (8.4”) with 76.2
+                                              mm (3”) core
+
+
+
+ 1.3 General Specifications
+   General
+                                      TE200/TE300                             TE210/TE310
+   Specifications
+   Physical dimensions    204 mm (W) x 164 mm (H) x 280 mm (L)
+   Weight                                   2.4kg                                   2.5kg
+                          External universal switching power supply
+   Electrical             Input: AC 100-240V, 2A, 50-60 Hz
+                          Output: DC 24V, 2.5A, 60W, LPS
+   Environmental          Operation: 5 ~ 40˚C (41 ~ 104˚F), 25~85% non-condensing
+   condition              Storage: -40 ~ 60 ˚C (-40 ~ 140˚F), 10~90% non-condensing
+
+
+
+ 1.4 Print Specifications
+      Print              TE200                  TE300                 TE210                       TE310
+Specifications      (203 dpi model)         (300 dpi model)      (203 dpi model)            (300 dpi model)
+Print head            203 dots/inch          300 dots/inch        203 dots/inch              300 dots/inch
+resolution            (8 dots/mm)            (12 dots/mm)          (8 dots/mm)               (12 dots/mm)
+Printing method                               Thermal transfer and direct thermal
+Dot size            0.125 x 0.125 mm    0.084 x 0.084 mm        0.125 x 0.125 mm         0.084 x 0.084 mm
+(width x length)    (1 mm = 8 dots)     (1 mm = 11.8 dots)       (1 mm = 8 dots)         (1 mm = 11.8 dots)
+Print speed
+(inches per            Up to 6 ips            Up to 5 ips           Up to 6 ips                 Up to 5 ips
+second)
+Print speed for                                                                   Up to 3 ips
+                                      N/A
+peel mode
+Max. print width     108 mm (4.25”)      105.7 mm (4.16”)        108 mm (4.25”)          105.7 mm (4.16”)
+Max. print length   2,794 mm (110”)         1,016 mm (40”)      25,400 mm (1000")        11,430 mm (450")
+
+
+
+
+                                                     5
+  1.5 Ribbon Specifications
+         Ribbon Specifications
+         Ribbon outside diameter       1” core: Max. 67mm
+                                       0.5” core: Max. 40mm
+         Ribbon length                 1” inner core: 300 meters
+                                       0.5” inner core: 110 meters
+         Ribbon core inside diameter   0.5 and 1 inch
+         Ribbon width                  40 ~ 110 mm
+         Ribbon wound type             Outside wound
+
+
+
+  1.6 Media Specifications
+                                   TE200                TE300                TE210             TE310
+   Media Specifications
+                             (203 dpi model)    (300 dpi model)       (203 dpi model)     (300 dpi model)
+Label roll capacity                                             Max. 5” OD
+Media type                              Continuous, die-cut, black mark, fan-fold, notch
+Media wound type                                             Outside wound
+Media width                                              20mm ~ Max. 112 mm
+Media thickness                              0.06 mm (2.36 mil) ~ 0.19 mm (7.48 mil)
+Media core diameter                            1” (25.4 mm) & 1.5” (38 mm) ID core
+Label length                                           5 mm ~ Max. printing length
+Label length (peeler mode)                   N/A                             1" ~ 6" (25.4 ~ 152.4 mm)
+Label length (cutter mode)                   N/A                             1" ~ Max. printing length
+Gap height                                                 Min. 2 mm (0.09”)
+Black mark height                                          Min. 2 mm (0.09”)
+Black mark width                                           Min. 8 mm (0.31”)
+
+
+
+
+                                                   6
+2. Operations Overview
+
+2.1 Unpacking and Inspection
+
+    This printer has been specially packaged to withstand damage during shipping. Please carefully
+    inspect the packaging and printer upon receiving the bar code printer. Please retain the
+    packaging materials in case you need to reship the printer.
+
+
+    Unpacking the printer, the following items are included in the carton.
+
+
+ One printer unit
+
+ One quick installation guide
+
+ One power cord
+
+ One external universal switching power supply
+
+ One USB interface cable
+
+   A pair of 1” Ribbon spindles for 300M ribbon
+
+ One 1’’ ribbon paper core
+
+ One label spindle with two fixing tabs and two 1.5” adapters
+
+
+    If any parts are missing, please contact the Customer Service Department of your purchased
+    reseller or distributor.
+
+
+
+
+                                                   7
+2.2 Printer Overview
+2.2.1 Front View
+
+
+
+
+                                               1
+
+
+
+                                               2
+               4
+
+
+
+
+                                           3
+
+
+
+
+          1.       LED indicator
+          2.       Feed/Pause button
+          3. Top cover open tab
+          4.       Paper exit chute
+
+
+
+
+                                       8
+2.2.2 Interior View
+
+
+                          1
+                  2
+             3
+
+    4                                                                                        14
+                                                           8
+
+5
+
+                                                                                                   13
+                                                      7
+
+
+                                                  OPEN                                            12
+                                             6
+
+
+                                                                                        11
+                                                                 9
+
+
+
+
+                                                 10
+
+
+
+
+        1.       Printer top cover                    8.       Media supply spindle
+        2.       Ribbon supply spindle                9.       Platen roller
+        3.       Ribbon supply hub                    10. Black mark sensor
+        4.       Ribbon rewind hub                    11. Gap sensor
+        5.       Ribbon rewind spindle                12. Media guide
+        6.       Print head release button            13. Media guide adjustment knob
+        7.       Fixing tabs                          14. Print head
+
+
+                        WARNING
+        HAZARDOUS MOVING PARTS
+         KEEP FINGERS AND OTHER
+                  BODY PARTS AWAY
+
+                                                          9
+2.2.3 Rear View
+
+
+
+
+                                      1   2   3 4       5      6
+
+
+       1.   Power switch
+       2.   Power jack socket
+       3.   USB interface (USB 2.0/Hi-Speed mode)
+       4.   USB host (TE210/TE310 Series only)
+       5.   RS-232 interface (TE210/TE310 Series only)
+       6.   Ethernet interface (TE210/TE310 Series only)
+       Note:
+       The interface picture here is for reference only. Please refer to the product specification for
+       the interfaces availability.
+
+
+
+
+                                                 9
+3. Setup
+
+3.1 Setting up the Printer
+
+   Place the printer on a flat, secure surface, then
+   follow the steps below:
+  1.    Plug the power cord into the AC power cord
+        socket at the rear of the printer. Then, plug
+        the other side into a properly grounded
+        power outlet.
+  2. Connect the printer to the computer with the
+        provided USB cable.
+  3. Push the power switch on “-” side to open the
+        power of printer.
+  4. If you would like to watch printer installation
+        videos, please scan the QR code on the right
+        side for more information.
+
+
+Note:
+* Please switch OFF printer power switch prior to plugging in the power cord to printer power jack.
+* The interface picture here is for reference only. Please refer to the product specification for the interfaces
+ availability.
+
+
+
+
+                                                        10
+3.2 Loading the Ribbon
+
+                              1. Open the printer top cover by
+                                   pressing the top cover open tabs
+                                   located on each side of the printer.
+
+
+
+
+                              2. Insert the paper core to the ribbon
+                                   rewind spindle.
+                                  Note: Please follow the direction
+                                   when installing the ribbon rewind
+                                   spindle.
+
+
+
+
+                              L                                                R
+
+                              3. Insert the right side of ribbon rewind
+                                   spindle first. Then, insert the left side
+                                   to the hole at the left side of ribbon
+                                   rewind hub (green).
+                                   Note:
+                                   It can also be substituted by 0.5 or
+                                   1 inch paper roll with notches on
+                                   both sides. Please insert it at the
+                                   ribbon rewind hub directly.
+
+
+
+
+                         11
+            4. Push the print head release button to
+               open the print head mechanism.
+
+
+
+
+     OPEN
+
+
+
+
+            5. Insert the ribbon to the ribbon
+               spindle.
+               Note: The ribbon spindle can be
+               substituted by insert the ribbon
+               with notches on both sides to the
+               ribbon mechanism directly.
+
+
+
+
+            6. Insert the right side of ribbon supply
+               spindle (marked “R”) to the ribbon
+               supply hub first. Then, insert the left
+               side of ribbon supply spindle to the
+               hole at the left side of ribbon supply
+               hub (green).
+
+
+
+
+12
+                                                7. Pull the leader of the ribbon through
+                                                    the print head and stick the leader of
+                                                    the ribbon onto the ribbon rewind
+                                                    paper core.
+                                                8. Turn the ribbon rewind hub until the
+                                                    ribbon plastic leader is thoroughly
+                                                    wound and the black section of the
+                                                    ribbon covers the print head.
+
+
+
+
+                                                9. Close the print head mechanism with
+                                                    both hands and make sure the
+                                                    latches are engaged securely.
+
+
+
+
+       Ribbon loading path
+
+
+
+
+Note:
+Please refer to printer installation videos at TSC YouTube.
+
+
+
+
+                                        13
+3.3 Loading the Media
+3.3.1 Loading the Roll Labels
+
+
+                                     1.   Open the printer top cover by
+                                          pressing the top cover open tabs
+                                          located on each side of the printer.
+
+
+
+
+                                     2.   Insert the paper roll into the media
+                                          supply spindle and use two fixing
+                                          tabs to fix the paper roll onto the
+                                          center of the spindle. (If your paper
+                                          width is 4”, you can remove the
+                                          fixing tabs on both side of the
+                                          media supply spindle.)
+
+
+
+
+                                     3.   Place the paper roll onto the paper
+                                          roll mount.
+
+
+
+
+                                      Media spindle attached with two fixing
+                                      tabs and two 1.5” adapters
+                                14
+                                           4.   Push the print head release button
+                                                to open the print head mechanism.
+
+
+
+
+                                                                                     Gap sensor
+
+
+
+
+                                                                              Black mark
+                                                Platen roller                 sensor
+Note: The black mark sensor position is moveable and the gap sensor is fixed.
+Please make sure the gap or black mark is at the location where media gap/black
+mark will pass through for sensing.
+                                           5.   Feed the paper, printing side face
+                                                up, through the media sensor and
+                                                place the label leading edge onto
+                                                the platen roller. Move the media
+                                                guides to fit the label width.
+
+
+
+
+                                           6.   Close the print head mechanism
+                                                with both hands and make sure the
+                                                latches are engaged securely.
+
+
+
+
+                                      15
+7.   Use “Diagnostic Tool” to set the media sensor type and calibrate the selected
+     sensor. (Start the “Diagnostic tool”  Select the “Printer Configuration” tab  Click
+     the “Calibrate Sensor” button ) Please refer to section 5.3.
+
+
+                                                                       1
+
+
+
+
+               2
+
+
+Note:
+* Please calibrate the gap/ black mark sensor when changing media.
+* Please refer to videos at TSC YouTube.
+    Media Loading path
+
+
+
+
+                                           16
+3.3.2 External Label Roll Mount Installation (Option)
+
+
+                                                1. Attach the extended plate on the
+                                                   bottom of the printer.
+
+
+
+
+                                                2. Insert a 3” (or 1”) label spindle into a
+                                                   paper roll. Then, install it on the
+                                                   external paper roll mount.
+          1” label spindle
+
+                                                   3” label spindle
+
+
+
+
+                                                3. Feed the media through the rear
+                                                   external label entrance chute.
+
+
+
+
+                                          17
+                                               4. Refer to chapter 3.3.1 to install the
+                                                  label. Use “Diagnostic Tool” to set
+                                                  the media sensor type and calibrate
+                                                  the selected sensor.
+
+
+
+
+Note:
+Please calibrate the gap/black mark sensor when changing media.
+
+
+
+
+                                        18
+3.3.3 Loading the Media in Cutter mode (TE210/TE310 Series only, dealer option)
+
+
+                                              1.   Refer to chapter 3.3.1 to install the
+                                                   label. Use “Diagnostic Tool” to set
+                                                   the media sensor type and calibrate
+                                                   the selected sensor.
+                                              2.   Open the printer top cover by
+                                                   pressing the top cover open tabs
+                                                   located on each side of the printer.
+
+
+
+
+                                              3.   Push the print head release button
+                                                   to open the print head mechanism
+                                                   and feed the media through the
+                                                   media sensor. Move the media
+                                                   guides to fit the label width.
+
+
+
+
+                                              4.   Lead the media through the cutter
+                                                   paper opening.
+
+
+
+
+                                         19
+                                              5.   Close the print head mechanism as
+                                                   indicated.
+
+
+
+
+                                              6.   Close the printer cover. Use the
+                                                   “Diagnostic Tool” to set the printer
+                                                   for cutter mode by selecting
+                                                   “CUTTER” option for Post-Print
+                                                   Action setting then click “Set”
+                                                   button to enable the cutter mode.
+                                                   Press the FEED button to test.
+
+
+
+
+Note:
+Please calibrate the gap/black mark sensor when changing media.
+
+
+
+
+                                        20
+3.3.4 Loading the Media in Peel-off Mode (TE210/TE310 Series only, dealer option)
+
+
+                                              1.     Refer to chapter 3.3.1 to install the
+                                                     label. Use “Diagnostic Tool” to set
+                                                     the media sensor type and calibrate
+                                                     the selected sensor.
+                                              2.     Open the printer top cover by
+                                                     pressing the top cover open tabs
+                                                     located on each side of the printer.
+
+
+
+
+                                              3.     Push the print head release button
+                                                     to open the print head mechanism
+                                                     and feed the media through the
+                                                     media sensor. Move the media
+                                                     guides to fit the label width.
+
+
+
+
+                                              4.     Pull the label through the front of
+                                                     the printer and take some labels off
+                                                     only leave the liner.
+
+
+
+
+                                                   Label
+
+
+
+
+        Liner
+
+
+
+
+                                         21
+                                                  5.   Open the peel-off cover. Feed the
+                                                       liner into peel-off cover slot.
+
+
+
+
+                            Peel-off cover slot
+
+
+                                                  6.   Close the peel-off module. Use the
+                                                       “Diagnostic Tool” to set the peel-off
+                                                       mode by selecting “PEEL” option
+                                                       for Post-Print Action setting then
+                                                       click “Set” button to enable the
+                                                       peel-off mode.
+
+
+
+
+                                                  7.   Close the media cover and complete
+                                                       peeler module installation.
+
+
+
+
+Note:
+The peeler module only support plain paper.
+
+
+
+
+                                          22
+3.4 Installing the Print Engine (Option)
+
+                                     1.     Refer to chapter 3.3.1 to install the
+                                            label. Use “Diagnostic Tool” to set
+                                            the media sensor type and calibrate
+                                            the selected sensor.
+                                     2.     Open the printer top cover by
+                                            pressing the top cover open tabs
+                                            located on each side of the printer.
+
+
+
+
+                                     3.     Push the print head release button
+                                            to open the print head mechanism
+                                            and feed the media through the
+                                            media sensor. Move the media
+                                            guides to fit the label width.
+
+
+
+
+                                     5.     Pull the label through the front of
+                                            the printer and take some labels off
+                                            only leave the liner.
+
+
+
+
+                                          Label
+
+
+
+
+       Liner
+
+
+
+
+                                23
+4. LED and Button Functions
+   This printer has one button and one three-color LED indicator. By indicating the LED with
+   different color and pressing the button, printer can feed labels, pause the printing job, select
+   and calibrate the media sensor, print printer self-test report, reset printer to defaults
+   (initialization). Please refer to the button operation below for different functions.
+
+
+
+4.1 LED Indicator
+          LED Color                                    Description
+           Green/Solid        This illuminates that the power is on and the device is ready to
+                              use.
+          Green/Flash         This illuminates that the system is downloading data from PC to
+                              memory or the printer is paused.
+             Amber            This illuminates that the system is clearing data from printer.
+            Red/Solid         This illuminates printer head open, cutter error.
+           Red/Flash          This illuminates a printing error, such as head open, paper
+                              empty, paper jam, ribbon empty, or memory error etc.
+
+
+
+
+4.2 Regular Button Functions
+   1. Feed labels
+   When the printer is at ready states (Green/Solid), press the button to feed one label to the
+   beginning of next.
+
+
+   2. Pause the printing job
+   When the printer is at printing states, press the button to pause a print job. When the printer is
+   paused the LED will be green blinking. Press the button again to continue the printing job.
+
+
+
+4.3 Power-on Utilities
+  There are six power-on utilities to set up and test printer hardware. These utilities are activated
+  by pressing FEED button then turning on the printer power simultaneously and release the
+  button at different color of LED.
+
+
+  Please follow the steps below for different power-on utilities.
+  1. Turn off the printer power switch.
+  2. Hold on the button then turn on the power switch.
+  3. Release the button when LED indicates with different color for different functions.
+
+
+                                                  24
+            Power on utilities             The LED color will be changed as following pattern:
+                                           Amber     Red       Amber      Green       Green/Amber Red/Amber Solid green
+                            LED color
+                                                   (5 blinks) (5 blinks) (5 blinks)    (5 blinks)   (5 blinks)
+
+
+       Functions
+
+1. Gap / black mark sensor calibration             Release
+
+2. Gap / black mark sensor calibration,                       Release
+
+  Self-test and enter dump mode
+3. Printer initialization                                                Release
+
+4. Set black mark sensor as media                                                       Release
+
+  sensor and calibrate the black mark
+  sensor
+5. Set gap sensor as media sensor and                                                               Release
+
+  calibrate the gap sensor
+6. Skip AUTO.BAS                                                                                                 Release
+
+
+
+ 4.3.1 Gap/Black Mark Sensor Calibration
+
+       Gap/black mark sensor sensitivity should be calibrated at the following conditions:
+       1. A brand new printer
+       2. Change label stock
+       3. Printer initialization
+
+
+       Please follow the steps below to calibrate the ribbon and gap/black mark sensor.
+       1. Turn off the power switch.
+       2. Hold on the button then turn on the power switch.
+       3. Release the button when LED becomes red and blinking. (Any red will do during the 5 blinks).
+
+
+              It will calibrate the ribbon sensor and gap/black mark sensor sensitivity.
+              The LED color will be changed as following order：
+               Amber  red (5 blinks)  amber (5 blinks)  green (5 blinks)  green/amber (5 blinks)
+                red/amber (5 blinks)  solid green
+
+
+       Note:
+       Please select gap or black mark sensor by sending GAP or BLINE command to printer prior to
+       calibrate the sensor.
+       For more information about GAP and BLINE command, please refer to TSPL/TSPL2 programming
+       manual.
+
+
+
+                                                        25
+4.3.2 Gap/Black Mark Calibration, Self-test and Dump Mode
+
+   While calibrate the gap/black mark sensor, printer will measure the label length, print the
+   internal configuration (self-test) on label and then enter the dump mode. To calibrate gap or
+   black mark sensor, depends on the sensor setting in the last print job.
+
+
+   Please follow the steps below to calibrate the sensor.
+   1. Turn off the power switch.
+   2. Hold on the button then turn on the power switch.
+   3. Release the button when LED becomes amber and blinking. (Any amber will do during the 5
+        blinks)
+
+
+          The LED color will be changed as following order.
+           Amber  red (5 blinks)  amber (5 blinks)  green (5 blinks)  green/amber (5 blinks)
+            red/amber (5 blinks)  solid green
+
+
+   4. It calibrates the sensor and measures the label length and prints internal settings then enter
+        the dump mode.
+
+
+   Note:
+   Please select gap or black mark sensor by Diagnostic Tool or by GAP or BLINE command prior to
+   calibrate the sensor.
+   For more information about GAP and BLINE command, please refer to TSPL/TSPL2 programming
+   manual.
+
+
+
+
+                                                  26
+ Self-test
+
+Printer will print the printer configuration after gap/black mark sensor calibration. Self-test
+printout can be used to check if there is any dot damage on the heater element, printer
+configurations and available memory space.
+
+
+Self-test printout
+
+                                                               Model name
+                                                               F/W version
+                                                               Firmware checksum
+                                                               Printer S/N
+                                                               TSC configuration file
+                                                               System date
+                                                               System time
+                                                               Printed mileage (meter)
+                                                               Cutting counter
+
+
+
+
+                                                               Print speed (inch/sec)
+                                                               Print darkness
+                                                               Label size (inch)
+                                                               Gap distance (inch)
+                                                               Gap/black mark sensor intension
+                                                               Code page
+                                                               Country code
+
+
+
+
+                                                               ZPL setting information
+                                                               Print darkness
+                                                               Print speed (inch/sec)
+                                                               Label size
+                                                               Control prefix
+                                                               Format prefix
+                                                               Delimiter prefix
+                                                               Printer power up motion
+                                                               Printer head close motion
+                                                               Note:
+                                                               ZPL is emulating for Zebra®
+                                                               language.
+
+
+
+
+                                                               RS232 serial port
+                                                               configuration
+
+
+
+
+                                               27
+     Numbers of download files
+     Total & available memory
+     space
+
+
+
+
+     Print head check pattern
+
+
+
+
+28
+     Dump mode
+
+    Printer will enter dump mode after printing printer configuration. In the dump mode, all
+    characters will be printed in 2 columns as following. The left side characters are received from
+    your system and right side data are the corresponding hexadecimal value of the characters. It
+    allows users or engineers to verify and debug the program.
+
+
+
+
+               ASCII Data                                                   Hex decimal data related to left
+                                                                            column of ASCII data
+
+
+
+
+     Note:
+     1. Dump mode requires 4” wide paper width.
+     2. Turn off / on the power to resume printer for normal printing.
+
+
+
+
+4.3.3 Printer Initialization
+
+    Printer initialization is used to clear DRAM and restore printer settings to defaults.
+    Printer initialization is activated by the following procedures.
+    1. Turn off the power switch.
+    2. Hold on the button then turn on the power switch.
+    3. Release the button when LED turns green after 5 amber blinks. (Any green will do during the
+        5 blinks).
+
+
+          The LED color will be changed as following:
+          Amber  red (5 blinks)  amber (5 blinks)  green (5 blinks)  green/amber (5 blinks)
+           red/amber (5 blinks)  solid green
+
+
+
+
+                                                   29
+   Printer configuration will be restored to defaults as below after initialization.
+                    Parameter                           Default setting
+           Speed                     127 mm/sec (5 ips) (203DPI)
+                                     76 mm/sec (3 ips) (300DPI)
+           Density                   8
+           Label Width               4" (101.5 mm)
+           Label Height              4" (101.5 mm)
+           Sensor Type               Gap sensor
+           Gap Setting               0.12" (3.0 mm)
+           Print Direction           0
+           Reference Point           0,0 (upper left corner)
+           Offset                    0
+           Tear Mode                 On
+           Peel off Mode             Off
+           Cutter Mode               Off
+           Code Page                 850
+           Country Code              001
+           Clear Flash Memory        No
+
+
+4.3.4 Set Black Mark Sensor as Media Sensor and Calibrate the Black Mark Sensor
+
+   Please follow the steps as below.
+   1. Turn off the power switch.
+   2. Hold on the button then turn on the power switch.
+   3. Release the button when LED turns green/amber after 5 green blinks. (Any green/amber will
+   do during the 5 blinks).
+
+
+       The LED color will be changed as following:
+        Amber  red (5 blinks)  amber (5 blinks)  green (5 blinks)  green/amber (5 blinks)
+         red/amber (5 blinks)  solid green
+
+
+4.3.5 Set Gap Sensor as Media Sensor and Calibrate the Gap Sensor
+
+   Please follow the steps as below.
+   1. Turn off the power switch.
+   2. Hold on the button then turn on the power switch.
+   3. Release the button when LED turns red/amber after 5 green/amber blinks. (Any red/amber
+   will do during the 5 blinks).
+
+
+       The LED color will be changed as following:
+                                                   30
+        Amber  red (5 blinks)  amber (5 blinks)  green (5 blinks)  green/amber (5 blinks) 
+        red/amber (5 blinks)  solid green
+
+
+4.3.6 Skip AUTO.BAS
+
+   TSPL2 programming language allows user to download an auto execution file to flash memory.
+   Printer will run the AUTO.BAS program immediately when turning on printer power. The
+   AUTO.BAS program can be interrupted without running the program by the power-on utility.
+
+
+   Please follow the procedures below to skip an AUTO.BAS program.
+   1. Turn off printer power.
+   2. Press the FEED button and then turn on power.
+   3. Release the FEED button when LED becomes solid green.
+
+
+       The LED color will be changed as following:
+        Amber  red (5 blinks)  amber (5 blinks)  green (5 blinks)  green/amber (5 blinks) 
+        red/amber (5 blinks)  solid green
+
+
+
+   4. Printer will be interrupted to run the AUTO.BAS program.
+
+
+
+
+                                               31
+    5. Diagnostic Tool
+
+          TSC’s Diagnostic Utility is an integrated tool incorporating features that enable you to explore
+          a printer’s settings/status; change a printer’s settings; download graphics, fonts and firmware;
+          create a printer bitmap font; and send additional commands to a printer. With the aid of this
+          powerful tool, you can review printer status and settings in an instant, which makes it much
+          easier to troubleshoot problems and other issues.
+
+
+
+    5.1 Start the Diagnostic Tool
+
+          1. Double click on the Diagnostic tool icon                     to start the software.
+          2. There are four features (Printer Configuration, File Manager, Bitmap Font Manager,
+             Command Tool) included in the Diagnostic utility.
+
+
+
+
+ Features tab
+                                                                                                    Interface
+
+
+
+
+Printer functions
+
+
+
+
+                                                                                                      Printer setup
+
+
+
+
+  Printer Status
+
+
+
+
+                                                        32
+5.2 Printer Function
+
+   1. Select the PC interface connected with bar code printer.
+
+                                                                                2
+
+         The default interface setting is
+                                                            1
+         USB interface. If USB interface
+         is connected with printer, no
+         other settings need to be
+         changed in the interface field.
+
+
+   2.   Click the “Printer Function” button to setup.
+   3. The detail functions in the Printer Function Group are listed as below.
+
+
+                               Function                             Description
+                                                Calibrate the sensor specified in the Printer Setup
+                         Calibrate Sensor
+                                                group media sensor field
+                                                Setup the IP address, subnet mask, gateway for
+                         Ethernet Setup
+                                                the on board Ethernet
+                         RTC Setup              Synchronize printer Real Time Clock with PC
+                         Print Test Page        Print a test page
+                         Reset Printer          Reboot printer
+                                                Initialize the printer and restore the settings to
+                         Factory Default
+                                                factory default. (Please refer section 4.3.3)
+                         Dump Text              To activate the printer dump mode.
+                         Ignore AUTO.BAS        Ignore the downloaded AUTO.BAS program
+                                                Print printer configuration (Please refer section
+                         Configuration Page
+                                                4.3.2)
+                         Password Setup         Set the password to protect the settings
+
+
+    For more information about Diagnostic Tool, please refer to the diagnostic utility quick start
+    guide on TSC website.
+
+
+
+
+                                                33
+5.3 Calibrating Media Sensor by Diagnostic Tool
+
+   1. Make sure the media is already installed and print head mechanism is closed. (Please refer
+     to section 3.3.)
+
+
+                        Gap sensor                       Black mark sensor
+
+
+
+
+   2. Turn on the printer power switch.
+   3. Open Diagnostic tool and set interface. (The default setting is USB.)
+
+                                                                                  2
+
+             The default interface setting is
+                                                                1
+             USB interface. If USB interface
+             is connected with printer, no
+             other settings need to be
+             changed in the interface field.
+
+
+   4. Click the “Calibrate Sensor” button.
+   5. Select the media type and click the “Calibrate” button.
+
+
+
+
+                                                                              1
+
+
+
+
+                             2
+
+
+
+
+                                                34
+5.4 Setting Wi-Fi by Diagnostic Tool (Optional)
+
+    1. Make sure the media is installed ready and media cover is closed.
+    2. Turn on the printer power switch.
+    3. Open Diagnostic tool and set interface. (The default setting is USB)
+
+                                                                     2
+
+
+                                                     1
+         The default interface setting is
+         USB interface. If USB interface
+         is connected with printer, no
+         other settings need to be
+         changed in the interface field.
+
+
+    4. Select “Wireless” tab and “Built-in wireless module” item.
+    5. Enter and select the new WLAN settings in the editor.
+    6. Press “Set” button to set the new settings to the printer.
+    7. Press “Get” button to make sure WLAN is set properly.
+                                            1
+
+                               2
+
+
+
+
+                                                                 3
+
+
+
+
+                                                             4           5
+
+
+
+
+                                                35
+5.5 Setting Bluetooth by Diagnostic Tool (Optional)
+
+   1. Make sure the media is installed ready and media cover is closed.
+   2. Turn on the printer power switch.
+   3. Open Diagnostic tool and set interface. (The default setting is USB)
+
+                                                                   2
+
+
+                                                    1
+       The default interface setting is
+       USB interface. If USB interface
+       is connected with printer, no
+       other settings need to be
+       changed in the interface field.
+
+
+   4. Select “Wireless” tab and “Built-in wireless module” item.
+   5. Enter the new BT Local Name or BT PIN Code in the editor.
+   6. Press “Set” button to set the new BT name or BT PIN code of the printer.
+   7. Press “Get” button to get back the settings. Make sure the Bluetooth module
+      settings are set properly.
+                                           1
+
+                                2
+
+
+
+
+                                       3
+
+
+
+
+                                                               4             5
+
+
+
+
+                                               36
+6. Troubleshooting
+
+6.1 Common Problems
+
+     The following guide lists the most common problems that may be encountered when operating
+     this bar code printer. If the printer still does not function after all suggested solutions have been
+     invoked, please contact the Customer Service Department of your purchased reseller or
+     distributor for assistance.
+
+              Problem                   Possible Cause                        Recovery Procedure
+Power indicator does not         * The power cord is not           * Plug the power cord in printer and outlet.
+illuminate.                        properly connected.             * Switch the printer on.
+
+- The printer status from
+ DiagTool shows “Head
+                                 * The printer carriage is open.   * Please close the print carriage.
+ Open”.
+- The LED shows “Red (solid)”.
+- The printer status from
+ DiagTool shows “Ribbon End
+ Err.” Or “Ribbon Encoder        * Running out of ribbon.          * Supply a new ribbon roll.
+                                 * The ribbon is installed         * Please refer to the steps on section 3.2 to
+ Err.”                             incorrectly.                      re-install the ribbon.
+- The LED shows “Red
+ (blinking)”.
+- The printer status from
+                                 * Running out of label.
+ DiagTool shows “Out of                                         * Supply a new label roll.
+                                 * The label is installed
+                                                                * Please refer to the steps on section 3.3 to
+ Paper”.                           incorrectly.
+                                                                  reinstall the label roll.
+                                 * Gap/black mark sensor is not
+- The LED shows “Red                                            * Calibrate the gap/black mark sensor.
+                                   calibrated.
+ (blinking)”.
+- The printer status from     * Gap/black mark sensor is not
+                                set properly.
+  DiagTool shows “Paper Jam”. * Make sure label size is set     * Calibrate the gap/black mark sensor.
+- The LED shows “Red            properly.                       * Set label size correctly.
+                              * Labels may be stuck inside
+  (blinking)”.                  the printer mechanism.
+                                                                * Re-connect cable to interface.
+                                                                * Change a new cable.
+                                                                * Ribbon and media are not compatible.
+                                                                * Verify the ribbon-inked side.
+                              * Cable is not well connected to * Reload the ribbon again.
+                                serial or USB interface or      * Clean the print head.
+                                parallel port.                  * The print density setting is incorrect.
+          Not Printing
+                              * The serial port cable pin       * Print head’s harness connector is not well
+                                configuration is not pin to pin connected with printhead. Turn off the
+                                connected.                        printer and plug the connector again.
+                                                                * Check your program if there is a command
+                                                                  PRINT at the end of the file and there must
+                                                                  have CRLF at the end of each command
+                                                                  line.
+                                                      37
+         Memory full              * The space of FLASH/DRAM           * Delete unused files in the FLASH/DRAM.
+      ( FLASH / DRAM )              is full.
+                                  * Ribbon and media is loaded * Reload the supply.
+                                    incorrectly                   * Clean the print head.
+                                  * Dust or adhesive              * Clean the platen roller.
+                                    accumulation on the print     * Adjust the print density and print speed.
+                                    head.                         * Run printer self-test and check the print
+      Poor Print Quality          * Print density is not set        head test pattern if there is dot missing in
+                                    properly.                       the pattern.
+                                  * Printhead element is          * Change proper ribbon or proper label
+                                    damaged.                        media.
+                                  * Ribbon and media are          * The print head mechanism does not latch
+                                    incompatible.                   the print head properly.
+                                  * Label size is not specified
+                                                                  * Check if label size is setup correctly.
+                                    properly.
+                                                                  * Calibrate the sensor by Auto Gap or
+                                  * Sensor sensitivity is not set
+  Skip labels when printing                                         Manual Gap options.
+                                    properly.
+                                                                  * Clear the GAP/Black mark sensor by
+                                  * The media sensor is covered
+                                                                    blower.
+                                    with dust.
+                                                                  * Calibrate the sensor sensitivity again.
+                                                                  * Set the correct label size and gap size.
+                                                                  * If using the software BarTender, please set
+                                                                    the vertical offset in the driver.
+
+
+
+
+                                  * Media sensor sensitivity is not
+The printing position of small      set properly.
+                                  * Label size is incorrect.
+      label is incorrect          * The vertical offset setting in
+                                    the driver is incorrect.
+
+
+
+
+Missing printing on the left or
+                                  * Wrong label size setup.           * Set the correct label size.
+      right side of label
+                              * Ribbon installation is
+                                                                 * Please set the suitable density to have
+                                incorrect.
+                                                                   good print quality.
+      Wrinkle problem         * Media installation is incorrect.
+                                                                 * Make sure the label guide touch the edge
+                              * Print density is incorrect.
+                                                                   of the media guide.
+                              * Media feeding is incorrect.
+                              * The print head is dirty.         * Clean the print head.
+ Gray line on the blank label
+                              * The platen roller is dirty.      * Clean the platen roller.
+                              * The printer is in Hex Dump       * Turn off and on the printer to skip the
+      Irregular printing
+                                mode.                              dump mode.
+
+
+
+
+                                                       38
+7. Maintenance
+
+This session presents the clean tools and methods to maintain your printer.
+1. Please use one of following material to clean the printer.
+    Cotton swab
+    Lint-free cloth
+    Vacuum / Blower brush
+    100% ethanol
+2. The cleaning process is described as following,
+    Printer Part                       Method                                    Interval
+                       1. Always turn off the printer before   Clean the print head when changing a new
+                          cleaning the print head.             label roll.
+                       2. Allow the print head to cool for a
+                          minimum of one minute.
+                       3. Use a cotton swab and 100%
+                          ethanol to clean the print head
+                          surface.
+
+
+
+
+     Print Head
+
+
+
+
+                   1. Turn the power off.                  Clean the platen roller when changing a
+                   2. Rotate the platen roller and wipe it new label roll.
+   Platen Roller
+                      thoroughly with 100% ethanol and
+                      a cotton swab, or lint-free cloth.
+                   Use the lint-free cloth with 100%       As needed
+ Tear Bar/Peel Bar
+                   ethanol to wipe it.
+      Sensor       Compressed air or vacuum                Monthly
+      Exterior     Wipe it with water-dampened cloth As needed
+        Interior       Brush or vacuum                         As needed
+
+
+Note:
+    Do not touch printer head by hand. If you touch it careless, please use ethanol to clean it.
+    Please use 100% Ethenol. DO NOT use medical alcohol, which may damage the printer head.
+    Regularly clean the print head and supply sensors once change a new ribbon to keep printer
+     performance and extend printer life.
+                                                    39
+   The maximum printing ratio per dot line is 15% for this printer. To print the full web black line,
+    the maximum black line height is limited to 40 dots, which is 5mm for 203 DPI resolution printer
+    and 3.3mm for 300 DPI resolution printer.
+
+
+
+
+                                                  40
+Revise History
+
+    Date                                     Content                                     Editor
+  2018/1/23    Revise Agency Compliance and Approvals                             Kate
+
+  2019/3/21    Add Ch.7 Maintenance note                                          Kate
+               Revise Ch. 1.2.2 Regular full cut cutter (Guillotine cutter) and   Kate
+  2019/4/24
+               Regular full/partial cutter (Guillotine cutter) specification
+  2019/5/13    Add notes on Ch.1.2.2                                              Kate
+  2019/10/4    Revise CCC certification logo                                      Kate
+  2019/11/22   Add Ch.1.2.3 Label Print Module Features (Optional)                Kate
+  2020/3/20    Add MFi info(BT)                                                   Camille
+  2020/4/20    - Modify Ch. 1.2.2                                                 Camille
+               - Add Ch.5.4 Setting Wi-Fi by Diagnostic Tool (Optional)
+               Add Ch.5.5 Setting Bluetooth by Diagnostic Tool (Optional)
+
+
+
+
+                                                41
+                                   Corporate Headquarters                    Li Ze Plant
+                                   9F., No.95, Minquan Rd., Xindian Dist.,   No.35, Sec. 2, Ligong 1st Rd., Wujie Township,
+                                   New Taipei City 23141, Taiwan (R.O.C.)    Yilan County 26841, Taiwan (R.O.C.)
+                                   TEL: +886-2-2218-6789                     TEL: +886-3-990-6677
+                                   FAX: +886-2-2218-5678                     FAX: +886-3-990-5577
+                                   Web site: www.tscprinters.com
+TSC Auto ID Technology Co., Ltd.   E-mail: printer_sales@tscprinters.com
+                                           tech_support@tscprinters.com
+
+
+
+
+                                                     42
+

@@ -1,0 +1,366 @@
+# TSPL Quick Reference for Edge Development
+
+**Date:** 2026-04-13
+**Source:** `docs/TSPL_TSPL2_programming_manual.pdf` (289 pages, TSC 2014)
+**Printer:** TSC TE210 (TSPL2, firmware A x.x series)
+**For:** `src/printers/tcp-printer-client.ts` implementation
+
+---
+
+## 1. Byte constants for TypeScript
+
+```typescript
+// Immediate command prefixes
+const ESC = 0x1B;        // ASCII 27 — immediate command prefix (runs/returns even while printing)
+const TILDE = 0x7E;      // ASCII 126 (~) — deferred command prefix (returns only when printer ready)
+const BANG = 0x21;        // ASCII 33 (!)
+
+// Status query commands (send over TCP:9100, read reply)
+const CMD_STATUS_BYTE     = new Uint8Array([0x1B, 0x21, 0x3F]); // <ESC>!?  → 1 byte reply
+const CMD_STATUS_EXTENDED = new Uint8Array([0x1B, 0x21, 0x53]); // <ESC>!S  → 8 byte reply (V6.29+)
+
+// Info query commands (send as ASCII + CRLF, read variable-length ASCII reply)
+const CMD_MODEL    = "~!T\r\n";  // → model name + firmware
+const CMD_CODEPAGE = "~!I\r\n";  // → "codepage, country\r"
+const CMD_INFO     = "~!@\r\n";  // → multi-line printer info
+const CMD_FILES    = "~!F\r\n";  // → list files in DRAM/flash
+
+// Control commands (write-only, no reply)
+const CMD_RESET           = new Uint8Array([0x1B, 0x21, 0x52]); // <ESC>!R — full reset
+const CMD_RESTART         = new Uint8Array([0x1B, 0x21, 0x43]); // <ESC>!C — restart, skip AUTO.BAS
+const CMD_FEED            = new Uint8Array([0x1B, 0x21, 0x46]); // <ESC>!F — feed one label (V7.00+)
+const CMD_CANCEL          = new Uint8Array([0x1B, 0x21, 0x2E]); // <ESC>!. — cancel all jobs (V7.00+)
+const CMD_PAUSE           = new Uint8Array([0x1B, 0x21, 0x50]); // <ESC>!P — pause
+const CMD_RESUME          = new Uint8Array([0x1B, 0x21, 0x4F]); // <ESC>!O — resume
+
+// Safety commands (send as ASCII + CRLF)
+const CMD_ENABLE_IMMEDIATE  = "~!E\r\n";  // re-enable <ESC>! commands if disabled
+const CMD_DISABLE_IMMEDIATE = new Uint8Array([0x1B, 0x21, 0x44]); // <ESC>!D — disable (don't use)
+```
+
+---
+
+## 2. `<ESC>!?` status byte — full decode table
+
+The 1-byte reply is a bitmask. Individual bits can be OR'd together.
+
+```typescript
+enum PrinterStatusBit {
+  READY       = 0x00,  // all clear
+  HEAD_OPEN   = 0x01,  // bit 0
+  PAPER_JAM   = 0x02,  // bit 1
+  PAPER_OUT   = 0x04,  // bit 2
+  RIBBON_OUT  = 0x08,  // bit 3
+  PAUSED      = 0x10,  // bit 4
+  PRINTING    = 0x20,  // bit 5
+  OTHER_ERROR = 0x80,  // bit 7
+}
+
+function decodeStatusByte(b: number): string[] {
+  if (b === 0x00) return ["ready"];
+  const flags: string[] = [];
+  if (b & 0x01) flags.push("head_open");
+  if (b & 0x02) flags.push("paper_jam");
+  if (b & 0x04) flags.push("paper_out");
+  if (b & 0x08) flags.push("ribbon_out");
+  if (b & 0x10) flags.push("paused");
+  if (b & 0x20) flags.push("printing");
+  if (b & 0x80) flags.push("other_error");
+  return flags;
+}
+```
+
+**Common combined values from the manual:**
+
+| Hex | Meaning |
+|-----|---------|
+| `0x00` | Normal / ready |
+| `0x01` | Head opened |
+| `0x02` | Paper jam |
+| `0x03` | Paper jam + head opened |
+| `0x04` | Out of paper |
+| `0x05` | Out of paper + head opened |
+| `0x08` | Out of ribbon |
+| `0x09` | Out of ribbon + head opened |
+| `0x0A` | Out of ribbon + paper jam |
+| `0x0B` | Out of ribbon + paper jam + head opened |
+| `0x0C` | Out of ribbon + out of paper |
+| `0x0D` | Out of ribbon + out of paper + head opened |
+| `0x10` | Pause |
+| `0x20` | Printing |
+| `0x80` | Other error |
+
+---
+
+## 3. `<ESC>!S` extended status — 8-byte decode
+
+Reply format: `<STX> B1 B2 B3 B4 <ETX> <CR> <LF>` = 8 bytes total.
+
+```typescript
+interface ExtendedStatus {
+  message: string;   // byte 1 (after STX)
+  warning: string;   // byte 2
+  error1: string;    // byte 3
+  error2: string;    // byte 4
+  raw: Uint8Array;
+}
+
+const MESSAGE_MAP: Record<number, string> = {
+  0x40: "normal",     // '@'
+  0x60: "pause",      // '`'
+  0x42: "backing",    // 'B'
+  0x43: "cutting",    // 'C'
+  0x45: "error",      // 'E'
+  0x46: "form_feed",  // 'F'
+  0x4B: "waiting_key",// 'K'
+  0x4C: "waiting_label",// 'L'
+  0x50: "printing",   // 'P'
+  0x57: "imaging",    // 'W'
+};
+
+const WARNING_MAP: Record<number, string> = {
+  0x40: "normal",     // '@'
+  0x41: "paper_low",  // 'A'
+  0x42: "ribbon_low", // 'B'
+};
+
+const ERROR1_MAP: Record<number, string> = {
+  0x40: "normal",         // '@'
+  0x41: "head_overheat",  // 'A'
+  0x42: "motor_overheat", // 'B'
+  0x44: "head_error",     // 'D'
+  0x48: "cutter_jam",     // 'H'
+  0x50: "out_of_memory",  // 'P'
+};
+
+const ERROR2_MAP: Record<number, string> = {
+  0x40: "normal",       // '@'
+  0x41: "paper_empty",  // 'A'
+  0x42: "paper_jam",    // 'B'
+  0x44: "ribbon_empty", // 'D'
+  0x48: "ribbon_jam",   // 'H'
+  0x60: "head_open",    // '`'
+};
+
+// Normal state: 02 40 40 40 40 03 0D 0A  ("@@@@" = all normal)
+```
+
+---
+
+## 4. TSPL label commands used in our templates
+
+These are the commands present in the `.prn` content generated by Django. The edge does NOT generate these — it streams them verbatim. Listed here for debugging.
+
+### Setup commands (top of every label)
+
+| Command | Syntax | Our value | Notes |
+|---------|--------|-----------|-------|
+| `SIZE` | `SIZE m mm, n mm` | `SIZE 97.5 mm, 260 mm` | 203 DPI: 1mm = 8 dots |
+| `GAP` | `GAP m mm, n mm` | `GAP 3 mm, 0 mm` | Gap between labels |
+| `DIRECTION` | `DIRECTION n,m` | `DIRECTION 0,0` | 0=normal, 1=reversed |
+| `REFERENCE` | `REFERENCE x,y` | `REFERENCE 0,0` | Label origin |
+| `OFFSET` | `OFFSET n mm` | `OFFSET 0 mm` | Vertical label offset |
+| `SET PEEL` | `SET PEEL OFF` | OFF | No peeler |
+| `SET CUTTER` | `SET CUTTER OFF` | OFF | No cutter |
+| `SET TEAR` | `SET TEAR ON` | ON | Tear mode |
+| `CLS` | `CLS` | — | Clear image buffer |
+| `CODEPAGE` | `CODEPAGE n` | `CODEPAGE 1254` | Windows-1254 Turkish |
+
+### Content commands
+
+| Command | Syntax | Notes |
+|---------|--------|-------|
+| `TEXT` | `TEXT x,y,"font",rotation,x_mul,y_mul,"content"` | Font "0"..""8" = internal, "ROMAN.TTF" = TrueType |
+| `BAR` | `BAR x,y,width,height` | Horizontal/vertical bars |
+| `QRCODE` | `QRCODE x,y,ECC,cell,mode,rotation[,model,mask],"data"` | QR with tracking URL |
+| `PRINT` | `PRINT m,n` | m=sets, n=copies. Our labels use `PRINT 1,1` |
+
+### TEXT font parameter values
+
+| Value | Font | Size |
+|-------|------|------|
+| `"0"` | Monospaced | 12×20 dots |
+| `"1"` | Monospaced | 8×12 dots |
+| `"2"` | Monospaced | 10×16 dots |
+| `"3"` | Monospaced | 12×20 dots |
+| `"4"` | Monospaced | 14×26 dots |
+| `"5"` | Monospaced | 18×32 dots |
+| `"6"` | Monospaced | 24×48 dots |
+| `"7"` | Monospaced | 30×40 dots |
+| `"8"` | Monospaced | 34×48 dots |
+| `"ROMAN.TTF"` | TrueType | Scaled by x_mul, y_mul |
+
+---
+
+## 5. Network configuration commands
+
+Sendable over TCP:9100. Printer restarts after IP/port changes.
+
+```
+NET DHCP                        ← switch to DHCP, restart
+NET IP "192.168.1.220","255.255.255.0","192.168.1.1"  ← static IP, restart
+NET PORT 9100                   ← change raw port (default 9100), restart
+NET NAME "carcass-01"           ← set NetBIOS-style name
+```
+
+---
+
+## 6. Firmware version requirements
+
+| Command | Min version | Our use |
+|---------|------------|---------|
+| `<ESC>!?` | All | Primary status polling |
+| `<ESC>!S` | V6.29+ | Rich status (paper-low, ribbon-low) |
+| `<ESC>!C` | V5.23+ | Restart skip AUTO.BAS |
+| `<ESC>!D`/`~!E` | V6.61+ | Disable/enable immediate commands |
+| `<ESC>!F` | V7.00+ | Feed one label |
+| `<ESC>!.` | V7.00+ | Cancel all jobs |
+| `<ESC>!O`/`P` | V6.93+ | Resume/pause |
+| `CODEPAGE 1254` | V6.27+ (TSPL2) | Turkish encoding |
+
+TE210 is in the TE200 series (TSPL2, firmware A x.x). All commands above should be supported. Confirm by running `~!T` to get the exact firmware string.
+
+---
+
+## 7. Edge startup sequence per printer
+
+```typescript
+async function initializePrinter(printer: PrinterConfig): Promise<void> {
+  const client = new TcpPrinterClient(printer.host, printer.port);
+
+  // 1. Enable immediate commands (safety — idempotent)
+  await client.sendText("~!E");
+
+  // 2. Get model + firmware
+  const model = await client.getModel();
+  // → e.g. "TE210 V7.xx EZ\r\n"
+  // Store in printers.version column
+
+  // 3. Get codepage
+  const codepage = await client.getCodepage();
+  // → e.g. "1254, 001\r"
+  // Log for debugging
+
+  // 4. Quick status check
+  const status = await client.getStatusByte();
+  if (status === 0x00) {
+    printer.status = "online";
+  } else {
+    printer.status = "error";
+    printer.lastError = decodeStatusByte(status).join(", ");
+  }
+
+  // 5. Decide status query mode based on firmware
+  // If firmware >= V6.29, use <ESC>!S for richer status
+  // Otherwise fall back to <ESC>!? only
+}
+```
+
+---
+
+## 8. Dispatcher flow with TSPL commands
+
+```typescript
+async function dispatchJob(job: PrintJob, printer: Printer): Promise<void> {
+  const client = new TcpPrinterClient(printer.host, printer.port);
+
+  try {
+    // STEP 1: Pre-flight status check
+    const preStatus = await client.getStatusByte();
+    if (preStatus !== 0x00) {
+      throw new Error(`Printer not ready: ${decodeStatusByte(preStatus).join(", ")}`);
+    }
+
+    // STEP 2: Send PRN bytes (raw, binary-safe)
+    await client.send(job.prnBytes);
+
+    // STEP 3: Poll for completion
+    let readyStreak = 0;
+    const timeout = (job.labelCount || 1) * 2000 + 5000; // ms
+    const start = Date.now();
+
+    while (readyStreak < 3 && (Date.now() - start) < timeout) {
+      await Bun.sleep(500);
+      const status = await client.getStatusByte();
+
+      if (status === 0x00) {
+        readyStreak++;
+      } else if (status === 0x20) {
+        readyStreak = 0; // still printing, reset streak
+      } else {
+        throw new Error(`Printer error during print: ${decodeStatusByte(status).join(", ")}`);
+      }
+    }
+
+    if (readyStreak < 3) {
+      throw new Error("Timeout waiting for print completion");
+    }
+
+    // STEP 4: Mark success
+    job.status = "printed";
+    job.printedAt = new Date().toISOString();
+
+  } finally {
+    client.disconnect();
+  }
+}
+```
+
+---
+
+## 9. Important protocol quirks
+
+1. **No job completion event.** The printer never says "done". We infer it from status returning to `0x00` after having been `0x20` (printing).
+
+2. **No job IDs.** The printer doesn't know about job IDs. We track them entirely on the edge side.
+
+3. **One TCP connection at a time.** TSC doesn't document concurrent connection behavior. Serialize per printer via the queue.
+
+4. **`<ESC>!` vs `~!` prefix:**
+   - `<ESC>!` (0x1B 0x21) = immediate — executes/responds even while printing
+   - `~!` (0x7E 0x21) = deferred — responds only when printer is idle/ready
+
+5. **CRLF everywhere.** TSPL commands use `\r\n`. Binary status commands don't need it but it doesn't hurt.
+
+6. **`<ESC>!` can be disabled.** A prior job could have sent `<ESC>!D`. Always send `~!E` on startup to re-enable.
+
+7. **CODEPAGE 1254 is per-job.** Each `.prn` file carries its own `CODEPAGE 1254` directive, so the printer's default codepage doesn't matter for our labels.
+
+8. **Label buffer.** After `CLS`, all content commands write to an in-memory buffer. `PRINT m,n` dumps the buffer to the print head. Multiple `CLS`→content→`PRINT` blocks in one TCP write are processed sequentially.
+
+---
+
+## 10. Manual page references
+
+| Topic | Page |
+|-------|------|
+| SIZE | 1 |
+| GAP | 2 |
+| DIRECTION | 12 |
+| REFERENCE | 13 |
+| CODEPAGE | 16 |
+| CLS | 18 |
+| PRINT m,n | 23 |
+| TEXT | 76 |
+| BARCODE | 37 |
+| QRCODE | 64 |
+| BITMAP | 44 |
+| Status polling intro | 83 |
+| `<ESC>!?` (1-byte status) | 83 |
+| `<ESC>!C` (restart) | 84 |
+| `<ESC>!D` (disable immediate) | 85 |
+| `<ESC>!O` (resume) | 86 |
+| `<ESC>!P` (pause) | 87 |
+| `<ESC>!R` (reset) | 89 |
+| `<ESC>!S` (extended status) | 90 |
+| `<ESC>!F` (feed) | 92 |
+| `<ESC>!.` (cancel) | 93 |
+| `~!@` (printer info) | 94 |
+| `~!E` (enable immediate) | 98 |
+| `~!F` (list files) | 99 |
+| `~!I` (codepage info) | 100 |
+| `~!T` (model info) | 101 |
+| NET DHCP | 251 |
+| NET IP | 252 |
+| NET PORT | 253 |
+| NET NAME | 254 |
