@@ -120,12 +120,49 @@ export interface HeartbeatDeviceEntry {
   lastEventAt?: string | null;
 }
 
+/** Single printer status entry for heartbeat and inventory payloads */
+export interface HeartbeatPrinterEntry {
+  localPrinterId: string;
+  status: string;
+  lastSeenAt: string | null;
+}
+
 /** Payload for POST /heartbeat (aggregated connectivity + device status) */
 export interface HeartbeatPayload {
   version: string;
   uptimeSec: number;
   health: "ok" | "degraded" | "error";
   devices: HeartbeatDeviceEntry[];
+  printers?: HeartbeatPrinterEntry[];
+}
+
+/** A single pending print job returned by GET /print-jobs/pending */
+export interface PendingPrintJobEntry {
+  jobId: string;
+  targetRole: string | null;
+  targetPrinter: string | null;
+  prnContent: string;
+  labelCount: number;
+  createdAt: string;
+}
+
+/** Body for POST /print-jobs/<uuid>/ack */
+export interface PrintJobAckPayload {
+  status: "completed" | "failed";
+  printedAt: string | null;
+  resolvedPrinter: string | null;
+  attempts: number;
+  errorText?: string | null;
+}
+
+/** Single printer entry for POST /printers/inventory */
+export interface PrinterInventoryEntry {
+  localPrinterId: string;
+  role: string;
+  host: string;
+  port: number;
+  model: string | null;
+  status: string;
 }
 
 /** Queued request */
@@ -161,6 +198,8 @@ const EDGE_PATHS = [
   "/config",
   "/devices/status",
   "/heartbeat",
+  "/print-jobs",
+  "/printers/inventory",
 ] as const;
 
 function isEdgePath(path: string): boolean {
@@ -635,6 +674,45 @@ export class RestClient {
   }
 
   /**
+   * Activate Edge with a setup code from Cloud dashboard.
+   * Used by the first-run setup wizard as an alternative to env-var registration.
+   * @throws RestResponseError on 4xx/5xx with descriptive error messages
+   */
+  async activate(code: string): Promise<{
+    edgeId: string;
+    siteId: string;
+    siteName: string;
+    config: Record<string, unknown>;
+  }> {
+    const response = await this.request("POST", "/activate", {
+      code,
+      version: "0.3.0",
+      capabilities: ["weighing", "printing"],
+    });
+    if (!response.ok) {
+      const bodyText = await response.text();
+      let errorMessage: string;
+      try {
+        const parsed = JSON.parse(bodyText);
+        errorMessage = parsed.error || bodyText;
+      } catch {
+        errorMessage = bodyText;
+      }
+      throw new RestResponseError(
+        errorMessage,
+        response.status,
+        bodyText
+      );
+    }
+    return await response.json() as {
+      edgeId: string;
+      siteId: string;
+      siteName: string;
+      config: Record<string, unknown>;
+    };
+  }
+
+  /**
    * Get active sessions for devices.
    * Supports ETag: pass currentETag to send If-None-Match; on 304 returns notModified: true.
    */
@@ -757,6 +835,49 @@ export class RestClient {
   async postHeartbeat(payload: HeartbeatPayload): Promise<Response> {
     const response = await this.request("POST", "/heartbeat", payload);
     return response;
+  }
+
+  /**
+   * GET /print-jobs/pending - Poll for print jobs queued in Django that this edge should dispatch.
+   */
+  async pollPendingPrintJobs(): Promise<PendingPrintJobEntry[]> {
+    const response = await this.request("GET", "/print-jobs/pending");
+    if (!response.ok) {
+      throw new Error(`Poll print jobs failed: ${response.status} ${response.statusText}`);
+    }
+    const data = await response.json() as { jobs?: PendingPrintJobEntry[] };
+    return data.jobs ?? [];
+  }
+
+  /**
+   * POST /print-jobs/<uuid>/ack - Acknowledge a print job result back to Django.
+   */
+  async ackPrintJob(
+    globalJobId: string,
+    payload: PrintJobAckPayload
+  ): Promise<{ ok: boolean }> {
+    const response = await this.request("POST", `/print-jobs/${globalJobId}/ack`, payload);
+    if (!response.ok) {
+      throw new Error(`ACK print job failed: ${response.status} ${response.statusText}`);
+    }
+    return await response.json() as { ok: boolean };
+  }
+
+  /**
+   * POST /printers/inventory - Push current printer list to Django so it can map globalPrinterIds.
+   * Returns the Django-assigned globalPrinterId for each localPrinterId.
+   */
+  async pushPrinterInventory(
+    printers: PrinterInventoryEntry[]
+  ): Promise<{ ok: boolean; printers: Array<{ localPrinterId: string; globalPrinterId: string }> }> {
+    const response = await this.request("POST", "/printers/inventory", { printers });
+    if (!response.ok) {
+      throw new Error(`Printer inventory push failed: ${response.status} ${response.statusText}`);
+    }
+    return await response.json() as {
+      ok: boolean;
+      printers: Array<{ localPrinterId: string; globalPrinterId: string }>;
+    };
   }
 
   // ─────────────────────────────────────────────────────────────────────────────

@@ -1,0 +1,32 @@
+# Carnitrack_EDGE — host network (Linux only)
+#
+# Use on the plant PC / edge appliance when you need:
+#   - Printer discovery (TCP 9100 + HTTP) on the real LAN subnet
+#   - DP-401 scales connecting to the machine's actual IP:8899 without port mapping
+#
+# Docker Desktop (macOS/Windows) does not support host networking; use the default
+# bridge compose and set HOST_IP in .env so the Web UI suggests the correct /24.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.host-network.yml up -d --build
+#
+# Production:
+#   docker compose -f docker-compose.yml -f docker-compose.host-network.yml -f docker-compose.prod.yml up -d
+#
+# With network_mode: host, published ports from the base file are ignored at runtime.
+
+services:
+  carnitrack-edge:
+    network_mode: host
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "bun",
+          "--eval",
+          "fetch('http://127.0.0.1:' + (process.env.HTTP_PORT || '3000') + '/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s

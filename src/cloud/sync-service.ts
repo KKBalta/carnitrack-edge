@@ -6,11 +6,15 @@
  * @see GitHub Issue #8
  */
 
+import iconv from "iconv-lite";
+
 import { getEventProcessor } from "../devices/event-processor.ts";
 import { getRestClient } from "./rest-client.ts";
 import { getOfflineBatchManager } from "./offline-batch-manager.ts";
 import { config } from "../config.ts";
 import type { WeighingEvent, EventPayload } from "../types/index.ts";
+import { enqueue, getJobByGlobalId } from "../printers/print-job-queue.ts";
+import { getPrinterManager, updateGlobalPrinterId } from "../printers/printer-manager.ts";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -61,6 +65,7 @@ export class CloudSyncService {
   private syncConfig: SyncConfig;
   private retryTimer: ReturnType<typeof setInterval> | null = null;
   private batchTimer: ReturnType<typeof setInterval> | null = null;
+  private printJobPollTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor() {
     this.syncConfig = {
@@ -113,6 +118,9 @@ export class CloudSyncService {
     // Start batch timer for periodic batch uploads
     this.startBatchTimer();
 
+    // Start print job poll loop (Django → edge)
+    this.startPrintJobPollTimer();
+
     console.log("[SyncService] Started");
   }
 
@@ -127,6 +135,7 @@ export class CloudSyncService {
     this.isRunning = false;
     this.stopRetryTimer();
     this.stopBatchTimer();
+    this.stopPrintJobPollTimer();
 
     console.log("[SyncService] Stopped");
   }
@@ -598,6 +607,106 @@ export class CloudSyncService {
     if (this.batchTimer) {
       clearInterval(this.batchTimer);
       this.batchTimer = null;
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // PRINT JOB POLL (Django → edge)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Poll Django for pending print jobs and enqueue any new ones locally.
+   * De-duplicates by global_job_id so repeated polls are idempotent.
+   */
+  async pollAndEnqueuePrintJobs(): Promise<void> {
+    const restClient = getRestClient();
+    if (!restClient?.isOnline()) return;
+
+    try {
+      const jobs = await restClient.pollPendingPrintJobs();
+      let enqueued = 0;
+      for (const job of jobs) {
+        const existing = getJobByGlobalId(job.jobId);
+        if (existing) continue;
+
+        const prnBytes = Buffer.from(iconv.encode(job.prnContent, "windows-1254"));
+        enqueue({
+          globalJobId: job.jobId,
+          targetRole: job.targetRole,
+          targetPrinter: job.targetPrinter,
+          prnBytes,
+          source: "cloud",
+          labelCount: job.labelCount ?? 1,
+        });
+        enqueued++;
+      }
+      if (enqueued > 0) {
+        console.log(`[SyncService] Enqueued ${enqueued} cloud print job(s)`);
+      }
+    } catch (e) {
+      console.warn(
+        "[SyncService] Print job poll error:",
+        e instanceof Error ? e.message : String(e)
+      );
+    }
+  }
+
+  /**
+   * Push configured printer list to Django so it can assign global printer IDs.
+   * Stores returned globalPrinterIds back in local SQLite.
+   */
+  async pushPrinterInventory(): Promise<void> {
+    const restClient = getRestClient();
+    if (!restClient?.isOnline()) return;
+
+    const mgr = getPrinterManager();
+    const printers = mgr.getPrinters().filter((p) => p.enabled === 1);
+    if (printers.length === 0) return;
+
+    try {
+      const result = await restClient.pushPrinterInventory(
+        printers.map((p) => ({
+          localPrinterId: p.printer_id,
+          role: p.role,
+          host: p.host,
+          port: p.port,
+          model: p.model,
+          status: p.status,
+        }))
+      );
+
+      for (const entry of result.printers ?? []) {
+        updateGlobalPrinterId(entry.localPrinterId, entry.globalPrinterId);
+      }
+
+      console.log(
+        `[SyncService] Printer inventory pushed (${printers.length} printer(s), ${result.printers?.length ?? 0} mapped)`
+      );
+    } catch (e) {
+      console.warn(
+        "[SyncService] Printer inventory push error:",
+        e instanceof Error ? e.message : String(e)
+      );
+    }
+  }
+
+  private startPrintJobPollTimer(): void {
+    if (this.printJobPollTimer) {
+      clearInterval(this.printJobPollTimer);
+    }
+    this.printJobPollTimer = setInterval(() => {
+      if (this.isRunning) {
+        this.pollAndEnqueuePrintJobs().catch((e) => {
+          console.error("[SyncService] Print job poll error:", e);
+        });
+      }
+    }, config.printers.printJobPollIntervalMs);
+  }
+
+  private stopPrintJobPollTimer(): void {
+    if (this.printJobPollTimer) {
+      clearInterval(this.printJobPollTimer);
+      this.printJobPollTimer = null;
     }
   }
 }

@@ -32,6 +32,9 @@
 #           HOST_IP=192.168.1.100 docker compose -f docker-compose.test.yml up -d --build
 #           (Replace 192.168.1.100 with your actual static IP)
 #
+#   Linux + same LAN as printers: for discovery to reach 192.168.x.x, use host network:
+#           docker compose -f docker-compose.yml -f docker-compose.test.yml -f docker-compose.host-network.yml up -d --build
+#
 #   STEP 3: View logs:
 #           docker compose -f docker-compose.test.yml logs -f
 #
@@ -89,10 +92,12 @@ services:
       # Mock server runs on port 4000 by default
       - CLOUD_API_URL=${CLOUD_API_URL:-http://host.docker.internal:4000/api/v1/edge}
       
-      # HOST_IP: Your machine's IP address for scales to connect
-      # Set this to your static IP so it displays correctly in logs
+      # HOST_IP: Your machine's LAN IP (scales + printer discovery default /24 in Web UI)
       # Example: HOST_IP=192.168.1.100
       - HOST_IP=${HOST_IP:-}
+
+      # Optional: label printers when testing hardware
+      - PRINTERS=${PRINTERS:-}
       
       # Servers
       - TCP_PORT=8899

@@ -23,6 +23,10 @@ export {
   type SessionsResponse,
   type HeartbeatPayload,
   type HeartbeatDeviceEntry,
+  type HeartbeatPrinterEntry,
+  type PendingPrintJobEntry,
+  type PrintJobAckPayload,
+  type PrinterInventoryEntry,
 } from "./rest-client.ts";
 
 export {

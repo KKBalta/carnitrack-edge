@@ -5,6 +5,9 @@
 # Usage:
 #   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 #
+# On-site Linux edge (printer discovery + scales on real LAN IP), prefer:
+#   docker compose -f docker-compose.yml -f docker-compose.host-network.yml -f docker-compose.prod.yml up -d
+#
 # Production-specific configurations:
 #   - Resource limits
 #   - Security settings

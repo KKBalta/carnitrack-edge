@@ -251,6 +251,52 @@ CREATE INDEX IF NOT EXISTS idx_sync_queue_pending ON sync_queue(attempts, priori
 -- Deduplication index (device + timestamp + plu + weight)
 CREATE UNIQUE INDEX IF NOT EXISTS idx_events_dedup 
     ON events(device_id, scale_timestamp, plu_code, weight_grams);
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- PRINTERS (edge-local TSC / raw TCP)
+-- ═══════════════════════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS printers (
+  printer_id         TEXT PRIMARY KEY,
+  global_printer_id  TEXT UNIQUE,
+  display_name       TEXT,
+  role               TEXT NOT NULL DEFAULT 'generic',
+  transport          TEXT NOT NULL DEFAULT 'tcp',
+  host               TEXT NOT NULL,
+  port               INTEGER NOT NULL DEFAULT 9100,
+  model              TEXT,
+  status             TEXT NOT NULL DEFAULT 'unknown',
+  priority           INTEGER NOT NULL DEFAULT 100,
+  enabled            INTEGER NOT NULL DEFAULT 1,
+  last_seen_at       TEXT,
+  last_error         TEXT,
+  version            TEXT,
+  created_at         TEXT NOT NULL
+);
+
+-- PRINT JOBS (wire bytes are Windows-1254 / TSPL binary, not UTF-8 text)
+CREATE TABLE IF NOT EXISTS print_jobs (
+  job_id            TEXT PRIMARY KEY,
+  global_job_id     TEXT UNIQUE,
+  target_printer    TEXT,
+  target_role       TEXT,
+  resolved_printer  TEXT,
+  prn_bytes         BLOB NOT NULL,
+  status            TEXT NOT NULL DEFAULT 'pending',
+  source            TEXT NOT NULL DEFAULT 'local-api',
+  label_count       INTEGER NOT NULL DEFAULT 1,
+  attempts          INTEGER NOT NULL DEFAULT 0,
+  max_attempts      INTEGER NOT NULL DEFAULT 8,
+  next_attempt_at   TEXT,
+  error_text        TEXT,
+  created_at        TEXT NOT NULL,
+  printed_at        TEXT,
+  FOREIGN KEY (resolved_printer) REFERENCES printers(printer_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_printers_role ON printers(role);
+CREATE INDEX IF NOT EXISTS idx_print_jobs_status ON print_jobs(status);
+CREATE INDEX IF NOT EXISTS idx_print_jobs_next_attempt ON print_jobs(next_attempt_at) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_print_jobs_global_id ON print_jobs(global_job_id);
 `;
 
 // ═══════════════════════════════════════════════════════════════════════════════

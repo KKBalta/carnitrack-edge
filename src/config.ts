@@ -10,10 +10,31 @@
  * - Sessions managed by Cloud, Edge caches active sessions
  */
 
-import { join } from "path";
+import { join, dirname, resolve } from "path";
 
-// Base paths
-const PROJECT_ROOT = import.meta.dir ? join(import.meta.dir, "..") : process.cwd();
+// Base paths — resolve correctly for both development and compiled binary modes.
+// In compiled mode (bun build --compile), import.meta.dir points into Bun's
+// virtual filesystem (B:/~BUN/root/...) which doesn't exist on disk.
+// We detect that and fall back to the real executable path via process.argv[0].
+function resolveProjectRoot(): string {
+  if (process.env.CARNITRACK_DATA_DIR) {
+    return process.env.CARNITRACK_DATA_DIR;
+  }
+
+  const isCompiled =
+    (import.meta.dir && import.meta.dir.includes("~BUN")) ||
+    (typeof Bun !== "undefined" && Bun.main === process.execPath);
+
+  if (isCompiled) {
+    // process.argv[0] is always the real filesystem path to the compiled binary
+    const exePath = resolve(process.argv[0] || process.execPath);
+    return dirname(exePath);
+  }
+
+  return import.meta.dir ? join(import.meta.dir, "..") : process.cwd();
+}
+
+const PROJECT_ROOT = resolveProjectRoot();
 
 export const config = {
   // ═══════════════════════════════════════════════════════════════════════════
@@ -188,6 +209,24 @@ export const config = {
     encoding: "windows-1254" as const,
   },
 
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // PRINTERS (raw TCP :9100, TSC TSPL)
+  // id:host:port[:role=value] comma-separated; port required; role defaults to generic
+  // ═══════════════════════════════════════════════════════════════════════════
+  printers: {
+    configString: process.env.PRINTERS || "",
+    dispatchIntervalMs: Number(process.env.PRINTER_DISPATCH_INTERVAL_MS) || 1_000,
+    healthCheckIntervalMs: Number(process.env.PRINTER_HEALTH_CHECK_INTERVAL_MS) || 30_000,
+    completionPollIntervalMs: Number(process.env.PRINTER_POLL_INTERVAL_MS) || 500,
+    completionStreakRequired: Number(process.env.PRINTER_COMPLETION_STREAK) || 3,
+    dispatchTimeoutMs: Number(process.env.PRINTER_DISPATCH_TIMEOUT_MS) || 30_000,
+    connectTimeoutMs: Number(process.env.PRINTER_CONNECT_TIMEOUT_MS) || 3_000,
+    retryBaseDelayMs: Number(process.env.PRINTER_RETRY_BASE_MS) || 2_000,
+    retryMaxDelayMs: Number(process.env.PRINTER_RETRY_MAX_MS) || 60_000,
+    /** How often edge polls Django for pending print jobs (ms) */
+    printJobPollIntervalMs: Number(process.env.PRINT_JOB_POLL_INTERVAL_MS) || 5_000,
+  },
   // ═══════════════════════════════════════════════════════════════════════════
   // WORK HOURS (for alert thresholds)
   // ═══════════════════════════════════════════════════════════════════════════

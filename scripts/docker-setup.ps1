@@ -24,7 +24,7 @@
 
 param(
     [Parameter(Position=0)]
-    [ValidateSet('start', 'stop', 'restart', 'logs', 'status', 'mock', 'edge', 'info', 'build', 'clean', 'shell', 'backup', 'help')]
+    [ValidateSet('start', 'stop', 'restart', 'logs', 'status', 'mock', 'edge', 'info', 'build', 'clean', 'shell', 'backup', 'prod', 'prod-stop', 'help')]
     [string]$Command = 'help'
 )
 
@@ -150,10 +150,14 @@ function Show-Usage {
     Write-Host "  clean       Stop and remove containers, volumes, and networks"
     Write-Host "  shell       Open shell in running container"
     Write-Host "  backup      Backup SQLite database"
+    Write-Host "  prod        Production: create .env if missing, deploy Docker (compose + prod override)"
+    Write-Host "  prod-stop   Stop production Edge (compose + prod override)"
     Write-Host "  help        Show this help message"
     Write-Host ""
     Write-Host "Quick Start:" -ForegroundColor White
-    Write-Host "  .\docker-setup.ps1 start    # Starts everything automatically" -ForegroundColor Cyan
+    Write-Host "  .\docker-setup.ps1 start    # Test: mock Cloud + Edge (docker-compose.test.yml)" -ForegroundColor Cyan
+    Write-Host "  .\docker-setup.ps1 prod     # Production Edge (same as Linux: docker-setup.sh prod)" -ForegroundColor Cyan
+    Write-Host "  Or double-click: scripts\Start-Carnitrack-Windows.cmd" -ForegroundColor Cyan
     Write-Host ""
 }
 
@@ -205,6 +209,11 @@ function Show-NetworkInfo {
 function Test-ContainerRunning {
     $containers = docker ps --format '{{.Names}}' 2>$null
     return ($containers -match "carnitrack-edge-test")
+}
+
+function Test-ProdContainerRunning {
+    $containers = docker ps --format '{{.Names}}' 2>$null
+    return ($containers -match "carnitrack-edge\b")
 }
 
 # ─────────────────────────────────────────────────────────────────────────────────
@@ -545,24 +554,98 @@ function Invoke-Info {
     Show-NetworkInfo
 }
 
+function Invoke-Prod {
+    Print-Banner
+    Test-Docker
+    Test-Bun
+
+    $envPath = Join-Path $ProjectDir ".env"
+    if (-not (Test-Path $envPath)) {
+        Write-Host "No .env file found. Running env wizard (bun scripts/create-env.ts)..." -ForegroundColor Yellow
+        Write-Host ""
+        Push-Location $ProjectDir
+        try {
+            & bun scripts/create-env.ts
+            if ($LASTEXITCODE -ne 0) { throw "create-env failed" }
+        }
+        finally {
+            Pop-Location
+        }
+        if (-not (Test-Path $envPath)) {
+            Write-Host "Failed to create .env. Aborting." -ForegroundColor Red
+            exit 1
+        }
+        Write-Host ""
+    }
+
+    $ip = Get-LocalIP
+    Write-Host "Deploying production Edge (docker-compose.yml + docker-compose.prod.yml)..." -ForegroundColor Yellow
+    Write-Host ""
+
+    Push-Location $ProjectDir
+    try {
+        docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "Failed to start production container" -ForegroundColor Red
+            exit 1
+        }
+    }
+    finally {
+        Pop-Location
+    }
+
+    Write-Host ""
+    Write-Host "Production Edge deployed" -ForegroundColor Green
+    Write-Host "(Container restart policy: always — see docker-compose.prod.yml)" -ForegroundColor Blue
+    Write-Host ""
+    Write-Host "Connection Info:" -ForegroundColor White
+    Write-Host "  Scales connect to: " -NoNewline
+    Write-Host "${ip}:8899" -ForegroundColor Cyan
+    Write-Host "  Admin Dashboard:   " -NoNewline
+    Write-Host "http://${ip}:3000" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "View logs: " -NoNewline
+    Write-Host "docker compose -f docker-compose.yml -f docker-compose.prod.yml logs -f" -ForegroundColor Cyan
+    Write-Host "Stop:      " -NoNewline
+    Write-Host ".\scripts\docker-setup.ps1 prod-stop" -ForegroundColor Cyan
+    Write-Host ""
+}
+
+function Invoke-ProdStop {
+    Write-Host "Stopping production Edge..." -ForegroundColor Yellow
+    Push-Location $ProjectDir
+    try {
+        docker compose -f docker-compose.yml -f docker-compose.prod.yml down if ($LASTEXITCODE -ne 0) {
+            Write-Host "docker compose down returned a non-zero exit code" -ForegroundColor Yellow
+        }
+    }
+    finally {
+        Pop-Location
+    }
+    Write-Host "Production Edge stopped (volumes preserved)" -ForegroundColor Green
+    Write-Host ""
+}
+
 # ─────────────────────────────────────────────────────────────────────────────────
 # Main Entry Point
 # ─────────────────────────────────────────────────────────────────────────────────
 
 switch ($Command) {
-    'start'   { Invoke-Start }
-    'stop'    { Invoke-Stop }
-    'restart' { Invoke-Restart }
-    'logs'    { Invoke-Logs }
-    'status'  { Invoke-Status }
-    'mock'    { Invoke-Mock }
-    'edge'    { Invoke-Edge }
-    'build'   { Invoke-Build }
-    'clean'   { Invoke-Clean }
-    'shell'   { Invoke-Shell }
-    'backup'  { Invoke-Backup }
-    'info'    { Invoke-Info }
-    'help'    { 
+    'start'     { Invoke-Start }
+    'stop'      { Invoke-Stop }
+    'restart'   { Invoke-Restart }
+    'logs'      { Invoke-Logs }
+    'status'    { Invoke-Status }
+    'mock'      { Invoke-Mock }
+    'edge'      { Invoke-Edge }
+    'build'     { Invoke-Build }
+    'clean'     { Invoke-Clean }
+    'shell'     { Invoke-Shell }
+    'backup'    { Invoke-Backup }
+    'info'      { Invoke-Info }
+    'prod'      { Invoke-Prod }
+    'prod-stop' { Invoke-ProdStop }
+    'help' { 
         Print-Banner
         Show-Usage 
     }

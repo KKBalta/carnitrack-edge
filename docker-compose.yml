@@ -10,6 +10,10 @@
 #   Stop:           docker compose down
 #
 # The .env file (from create-env.ts) is loaded into the container.
+#
+# LAN printers (TSC :9100) + Web UI discovery:
+#   - Linux on-site: docker compose -f docker-compose.yml -f docker-compose.host-network.yml up -d
+#   - Bridge / Docker Desktop: set HOST_IP in .env to your LAN address for correct /24 hints.
 # ═══════════════════════════════════════════════════════════════════════════════
 
 services:
@@ -53,6 +57,17 @@ services:
       
       # Database
       - DB_PATH=/app/data/carnitrack.db
+
+      # LAN identity for dashboard + printer discovery default subnet (bridge / Docker Desktop)
+      - HOST_IP=${HOST_IP:-}
+
+      # Label printers (TSC raw TCP9100); see .env.example
+      - PRINTERS=${PRINTERS:-}
+      - PRINTER_DISPATCH_INTERVAL_MS=${PRINTER_DISPATCH_INTERVAL_MS:-}
+      - PRINTER_HEALTH_CHECK_INTERVAL_MS=${PRINTER_HEALTH_CHECK_INTERVAL_MS:-}
+      - PRINTER_POLL_INTERVAL_MS=${PRINTER_POLL_INTERVAL_MS:-}
+      - PRINTER_DISPATCH_TIMEOUT_MS=${PRINTER_DISPATCH_TIMEOUT_MS:-}
+      - PRINTER_CONNECT_TIMEOUT_MS=${PRINTER_CONNECT_TIMEOUT_MS:-}
       
       # Logging
       - LOG_LEVEL=${LOG_LEVEL:-info}
@@ -75,12 +90,6 @@ services:
     # ─────────────────────────────────────────────────────────────────────────────
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    
-    # ─────────────────────────────────────────────────────────────────────────────
-    # Network
-    # ─────────────────────────────────────────────────────────────────────────────
-    networks:
-      - carnitrack-network
     
     # ─────────────────────────────────────────────────────────────────────────────
     # Health Check
@@ -111,11 +120,3 @@ volumes:
     name: carnitrack-edge-logs
   carnitrack-generated:
     name: carnitrack-edge-generated
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Networks
-# ═══════════════════════════════════════════════════════════════════════════════
-networks:
-  carnitrack-network:
-    name: carnitrack-network
-    driver: bridge

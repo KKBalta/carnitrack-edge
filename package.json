@@ -15,9 +15,15 @@
     "env:create": "bun scripts/create-env.ts",
     "env:template": "bun scripts/create-env.ts --template",
     "env:full": "bun scripts/create-env.ts --full",
-    "send-scale-event": "bun run scripts/send-scale-event.ts"
+    "send-scale-event": "bun run scripts/send-scale-event.ts",
+    "build": "bun scripts/build.ts",
+    "build:windows": "bun scripts/build.ts --windows",
+    "build:linux": "bun scripts/build.ts --linux",
+    "build:all": "bun scripts/build.ts --all"
   },
-  "dependencies": {},
+  "dependencies": {
+    "iconv-lite": "^0.7.2"
+  },
   "devDependencies": {
     "@types/bun": "latest",
     "@types/node": "^22.0.0",

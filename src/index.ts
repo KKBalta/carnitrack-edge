@@ -16,6 +16,34 @@
  * - Provides minimal admin dashboard for debugging/monitoring
  */
 
+// Early crash guard — catches import-time errors so the window stays open on Windows.
+process.on("uncaughtException", (err) => {
+  console.error("\n[FATAL] Uncaught exception:", err);
+  const compiled =
+    (typeof import.meta !== "undefined" && import.meta.dir && import.meta.dir.includes("~BUN")) ||
+    (typeof Bun !== "undefined" && Bun.main === process.execPath);
+  try {
+    const fs = require("fs");
+    const path = require("path");
+    const logDir = compiled
+      ? path.join(path.dirname(path.resolve(process.argv[0] || process.execPath)), "logs")
+      : path.join(process.cwd(), "logs");
+    if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+    const ts = new Date().toISOString().replace(/[:.]/g, "-");
+    fs.writeFileSync(
+      path.join(logDir, `crash-${ts}.log`),
+      `Uncaught Exception — ${new Date().toISOString()}\n\n${err?.stack || err}\n`,
+    );
+  } catch { /* best-effort */ }
+  if (compiled) {
+    console.error("\nPress ENTER to close this window...");
+    process.stdin.resume();
+    process.stdin.once("data", () => process.exit(1));
+  } else {
+    process.exit(1);
+  }
+});
+
 import { networkInterfaces } from "os";
 import { existsSync } from "fs";
 import { config } from "./config.ts";
@@ -50,6 +78,17 @@ import {
 } from "./cloud/index.ts";
 import type { CloudConnectionState, EdgeIdentity } from "./types/index.ts";
 import { isValidUuid } from "./utils/uuid.ts";
+import iconv from "iconv-lite";
+import {
+  initPrinters,
+  destroyPrinters,
+  enqueue,
+  getJobs,
+  getJobPublic,
+  getPrinterManager,
+  discoverPrinterCandidates,
+  suggestSubnetFromIp,
+} from "./printers/index.ts";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // RUNTIME STATE
@@ -84,6 +123,9 @@ const state: EdgeState = {
   startedAt: new Date(),
 };
 
+/** True when Edge has no identity and is waiting for setup code activation. */
+let setupMode = false;
+
 // References to servers for graceful shutdown
 let tcpServer: TCPServer | null = null;
 let httpServer: ReturnType<typeof Bun.serve> | null = null;
@@ -116,6 +158,12 @@ const BANNER = `
 // UTILITY: GET LOCAL IP ADDRESS
 // ═══════════════════════════════════════════════════════════════════════════════
 
+function isIPv4Net(net: { family?: string | number; internal?: boolean }): boolean {
+  if (net.internal) return false;
+  // Node 18+ often reports numeric family; Bun/older Node use the string
+  return net.family === "IPv4" || net.family === 4;
+}
+
 /**
  * Get the local IP addresses of this machine
  * Returns all non-internal IPv4 addresses
@@ -129,8 +177,7 @@ function getLocalIpAddresses(): string[] {
     if (!nets) continue;
     
     for (const net of nets) {
-      // Skip internal (i.e., 127.0.0.1) and non-IPv4 addresses
-      if (net.family === 'IPv4' && !net.internal) {
+      if (isIPv4Net(net)) {
         addresses.push(net.address);
       }
     }
@@ -139,17 +186,47 @@ function getLocalIpAddresses(): string[] {
   return addresses;
 }
 
+/** Higher score = better default for “which LAN are printers on?” */
+function localIpPreferenceScore(ip: string): number {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(ip.trim());
+  if (!m) return -1000;
+  const a = Number(m[1]);
+  const b = Number(m[2]);
+  if ([a, b, Number(m[3]), Number(m[4])].some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return -1000;
+  if (a === 127) return -1000;
+  if (a === 169 && b === 254) return 10;
+  if (a === 192 && b === 168) return 100;
+  if (a === 10) return 80;
+  if (a === 172 && b >= 16 && b <= 31) return 40;
+  return 25;
+}
+
+function pickPreferredLocalIp(addresses: string[]): string {
+  if (addresses.length === 0) return "127.0.0.1";
+  let best = addresses[0]!;
+  let bestScore = localIpPreferenceScore(best);
+  for (let i = 1; i < addresses.length; i++) {
+    const ip = addresses[i]!;
+    const s = localIpPreferenceScore(ip);
+    if (s > bestScore) {
+      best = ip;
+      bestScore = s;
+    }
+  }
+  if (bestScore < 0) {
+    return addresses.find((ip) => localIpPreferenceScore(ip) > -1000) ?? "127.0.0.1";
+  }
+  return best;
+}
+
 /**
- * Get the primary local IP address (first non-internal IPv4)
+ * Get the primary local IP address (preferred non-internal IPv4 for LAN-facing use)
  * If HOST_IP environment variable is set (useful in Docker), use that instead
  */
 function getPrimaryLocalIp(): string {
-  // Allow override via environment variable (useful for Docker containers)
-  if (process.env.HOST_IP) {
-    return process.env.HOST_IP;
-  }
-  const addresses = getLocalIpAddresses();
-  return addresses[0] || '127.0.0.1';
+  const fromEnv = process.env.HOST_IP?.trim();
+  if (fromEnv) return fromEnv;
+  return pickPreferredLocalIp(getLocalIpAddresses());
 }
 
 /**
@@ -527,6 +604,462 @@ async function performEdgeRegistration(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// SETUP MODE (first-run wizard when no identity and no env vars)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+async function startSetupMode(): Promise<void> {
+  const localIp = getPrimaryLocalIp();
+
+  httpServer = Bun.serve({
+    port: config.http.port,
+    hostname: config.http.host,
+
+    async fetch(req: Request): Promise<Response> {
+      const url = new URL(req.url);
+      const path = url.pathname;
+
+      if (path === "/health") {
+        return Response.json({
+          status: "setup",
+          setupMode: true,
+          timestamp: new Date().toISOString(),
+        });
+      }
+
+      if (path === "/api/activate" && req.method === "POST") {
+        return handleSetupActivation(req);
+      }
+
+      if (path === "/" || path === "/index.html") {
+        return new Response(getSetupWizardHtml(), {
+          headers: { "Content-Type": "text/html" },
+        });
+      }
+
+      return new Response("Not Found", { status: 404 });
+    },
+  });
+
+  console.log("");
+  console.log("╔═══════════════════════════════════════════════════════════════════╗");
+  console.log("║                                                                   ║");
+  console.log("║   CarniTrack Edge — SETUP REQUIRED                                ║");
+  console.log("║                                                                   ║");
+  console.log(`║   Open in browser: http://${localIp}:${config.http.port}`.padEnd(68) + "║");
+  console.log("║   Enter the setup code from your CarniTrack Cloud account.        ║");
+  console.log("║                                                                   ║");
+  console.log("╚═══════════════════════════════════════════════════════════════════╝");
+  console.log("");
+}
+
+async function handleSetupActivation(req: Request): Promise<Response> {
+  try {
+    const body = await req.json() as { code?: string; cloudApiUrl?: string };
+    const code = (body.code || "").trim();
+    const cloudApiUrl = (body.cloudApiUrl || "").trim();
+
+    if (!code) {
+      return Response.json({ error: "Setup code is required." }, { status: 400 });
+    }
+
+    const apiUrl = cloudApiUrl || config.rest.apiUrl;
+
+    console.log(`[SETUP] Activating with code: ${code}`);
+    console.log(`[SETUP] Cloud API: ${apiUrl}`);
+
+    const tempClient = initRestClient({
+      apiUrl,
+      autoStart: false,
+      queueWhenOffline: false,
+    });
+
+    try {
+      const response = await tempClient.activate(code);
+
+      setEdgeConfig("edge_id", response.edgeId);
+      setEdgeConfig("site_id", response.siteId);
+      setEdgeConfig("site_name", response.siteName);
+      setEdgeConfig("registered_at", new Date().toISOString());
+      setEdgeConfig("cloud_config", JSON.stringify(response.config || {}));
+      if (cloudApiUrl) {
+        setEdgeConfig("cloud_api_url", cloudApiUrl);
+      }
+
+      state.edgeId = response.edgeId;
+      state.siteId = response.siteId;
+      state.siteName = response.siteName;
+
+      console.log(`[SETUP] Activation successful!`);
+      console.log(`[SETUP] Edge ID: ${response.edgeId}`);
+      console.log(`[SETUP] Site: ${response.siteName}`);
+      console.log(`[SETUP] Restarting into normal mode...`);
+
+      destroyRestClient();
+
+      setTimeout(() => {
+        setupMode = false;
+        httpServer?.stop();
+        httpServer = null;
+        startNormalMode();
+      }, 1000);
+
+      return Response.json({
+        success: true,
+        edgeId: response.edgeId,
+        siteId: response.siteId,
+        siteName: response.siteName,
+      });
+    } catch (err: unknown) {
+      destroyRestClient();
+      const message = err instanceof RestResponseError
+        ? err.message
+        : (err instanceof Error ? err.message : "Unknown error");
+      console.error(`[SETUP] Activation failed: ${message}`);
+      return Response.json({ error: message }, { status: 400 });
+    }
+  } catch {
+    return Response.json({ error: "Invalid request body." }, { status: 400 });
+  }
+}
+
+async function startNormalMode(): Promise<void> {
+  console.log("[SETUP] Transitioning to normal mode...");
+  // Re-run main() which will now find the stored edge identity and skip setup mode
+  try {
+    await main();
+  } catch (err) {
+    console.error("[SETUP] Failed to start normal mode:", err);
+    process.exit(1);
+  }
+}
+
+function getSetupWizardHtml(): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CarniTrack Edge — Setup</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+    :root {
+      --bg: #0f172a;
+      --bg-card: #1e293b;
+      --bg-input: #0f172a;
+      --border: #334155;
+      --border-focus: #3b82f6;
+      --text: #f1f5f9;
+      --text-muted: #94a3b8;
+      --accent: #3b82f6;
+      --accent-hover: #2563eb;
+      --success: #22c55e;
+      --success-bg: #052e16;
+      --error: #ef4444;
+      --error-bg: #450a0a;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'Inter', -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 480px;
+      padding: 2rem;
+    }
+
+    .logo {
+      text-align: center;
+      margin-bottom: 2rem;
+    }
+
+    .logo h1 {
+      font-size: 1.75rem;
+      font-weight: 700;
+      margin-bottom: 0.25rem;
+    }
+
+    .logo h1 span { color: var(--accent); }
+
+    .logo p {
+      color: var(--text-muted);
+      font-size: 0.875rem;
+    }
+
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 2rem;
+    }
+
+    .card h2 {
+      font-size: 1.125rem;
+      font-weight: 600;
+      margin-bottom: 0.5rem;
+    }
+
+    .card p {
+      color: var(--text-muted);
+      font-size: 0.875rem;
+      margin-bottom: 1.5rem;
+      line-height: 1.5;
+    }
+
+    .form-group {
+      margin-bottom: 1.25rem;
+    }
+
+    .form-group label {
+      display: block;
+      font-size: 0.8125rem;
+      font-weight: 500;
+      margin-bottom: 0.5rem;
+      color: var(--text-muted);
+    }
+
+    .code-input {
+      width: 100%;
+      padding: 0.875rem 1rem;
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 1.25rem;
+      font-family: 'Inter', monospace;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-align: center;
+      text-transform: uppercase;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    .code-input:focus {
+      border-color: var(--border-focus);
+    }
+
+    .code-input::placeholder {
+      color: var(--text-muted);
+      font-weight: 400;
+      font-size: 0.875rem;
+      letter-spacing: 0;
+    }
+
+    .url-input {
+      width: 100%;
+      padding: 0.625rem 0.75rem;
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 0.8125rem;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    .url-input:focus {
+      border-color: var(--border-focus);
+    }
+
+    .toggle-advanced {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-size: 0.75rem;
+      cursor: pointer;
+      padding: 0.25rem 0;
+      margin-bottom: 0.75rem;
+      display: block;
+    }
+
+    .toggle-advanced:hover { color: var(--text); }
+
+    .advanced { display: none; }
+    .advanced.show { display: block; }
+
+    .btn {
+      width: 100%;
+      padding: 0.875rem;
+      background: var(--accent);
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-size: 0.9375rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .btn:hover { background: var(--accent-hover); }
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .message {
+      margin-top: 1rem;
+      padding: 0.75rem 1rem;
+      border-radius: 8px;
+      font-size: 0.8125rem;
+      line-height: 1.5;
+      display: none;
+    }
+
+    .message.error {
+      display: block;
+      background: var(--error-bg);
+      border: 1px solid var(--error);
+      color: #fca5a5;
+    }
+
+    .message.success {
+      display: block;
+      background: var(--success-bg);
+      border: 1px solid var(--success);
+      color: #86efac;
+    }
+
+    .spinner {
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      border: 2px solid rgba(255,255,255,0.3);
+      border-top-color: white;
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+      vertical-align: middle;
+      margin-right: 0.5rem;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .help {
+      text-align: center;
+      margin-top: 1.5rem;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      line-height: 1.6;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="logo">
+      <h1>Carni<span>Track</span> Edge</h1>
+      <p>First-Time Setup</p>
+    </div>
+
+    <div class="card">
+      <h2>Activate Your Edge Device</h2>
+      <p>Enter the setup code from your CarniTrack Cloud account.<br>
+         Go to Edge Management and click "Add Edge Device" to get a code.</p>
+
+      <form id="activate-form" onsubmit="return handleActivate(event)">
+        <div class="form-group">
+          <label for="code">Setup Code</label>
+          <input type="text" id="code" class="code-input"
+                 placeholder="CT-XXXX-XXXX" maxlength="12"
+                 autocomplete="off" autofocus required>
+        </div>
+
+        <button type="button" class="toggle-advanced"
+                onclick="document.getElementById('advanced').classList.toggle('show')">
+          Advanced Options
+        </button>
+
+        <div id="advanced" class="advanced">
+          <div class="form-group">
+            <label for="cloud-url">Cloud API URL</label>
+            <input type="url" id="cloud-url" class="url-input"
+                   placeholder="${config.rest.apiUrl}"
+                   value="">
+          </div>
+        </div>
+
+        <button type="submit" class="btn" id="submit-btn">
+          Activate
+        </button>
+      </form>
+
+      <div id="message" class="message"></div>
+    </div>
+
+    <div class="help">
+      Don't have a setup code?<br>
+      Log into your CarniTrack Cloud account and go to<br>
+      <strong>Scales &gt; Edge Management &gt; Add Edge Device</strong>
+    </div>
+  </div>
+
+  <script>
+    const codeInput = document.getElementById('code');
+    codeInput.addEventListener('input', function() {
+      let v = this.value.toUpperCase().replace(/[^A-Z0-9-]/g, '');
+      if (v.length === 2 && !v.includes('-')) v = v + '-';
+      if (v.length === 7 && v.charAt(6) !== '-') v = v.slice(0, 7) + '-';
+      this.value = v;
+    });
+
+    async function handleActivate(e) {
+      e.preventDefault();
+      const code = document.getElementById('code').value.trim();
+      const cloudApiUrl = document.getElementById('cloud-url').value.trim();
+      const btn = document.getElementById('submit-btn');
+      const msg = document.getElementById('message');
+
+      if (!code) return false;
+
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span>Activating...';
+      msg.className = 'message';
+      msg.style.display = 'none';
+
+      try {
+        const resp = await fetch('/api/activate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code, cloudApiUrl: cloudApiUrl || undefined }),
+        });
+
+        const data = await resp.json();
+
+        if (resp.ok && data.success) {
+          msg.className = 'message success';
+          msg.innerHTML = 'Activation successful! <strong>' + (data.siteName || '') +
+            '</strong><br>Edge ID: ' + (data.edgeId || '').substring(0, 8) + '...' +
+            '<br><br>Starting CarniTrack Edge... Page will reload automatically.';
+          msg.style.display = 'block';
+
+          setTimeout(() => { window.location.reload(); }, 4000);
+        } else {
+          throw new Error(data.error || 'Activation failed');
+        }
+      } catch (err) {
+        msg.className = 'message error';
+        msg.textContent = err.message || 'Connection failed. Check your internet connection.';
+        msg.style.display = 'block';
+        btn.disabled = false;
+        btn.textContent = 'Activate';
+      }
+
+      return false;
+    }
+  </script>
+</body>
+</html>`;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // MAIN
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -535,6 +1068,8 @@ async function main() {
   console.log(`[MAIN] Starting CarniTrack Edge Service...`);
   console.log(`[MAIN] Version: 0.3.0 (Cloud-Centric)`);
   console.log(`[MAIN] Runtime: Bun ${Bun.version}${isRunningInDocker() ? " (Docker)" : ""}`);
+  console.log(`[MAIN] Data root: ${config.paths.root}`);
+  console.log(`[MAIN] argv[0]: ${process.argv[0]}`);
   console.log("");
   
   // ─────────────────────────────────────────────────────────────────────────────
@@ -562,9 +1097,14 @@ async function main() {
   if (state.edgeId) {
     console.log(`[INIT] ✓ Edge ID: ${state.edgeId}`);
     console.log(`[INIT] ✓ Site: ${state.siteName || state.siteId || "Unknown"}`);
-  } else {
+  } else if (config.edge.siteId || config.edge.name) {
     console.log(`[INIT] ⚠️  Edge not yet registered with Cloud`);
-    console.log(`[INIT]    Will register on first Cloud connection`);
+    console.log(`[INIT]    Will register on first Cloud connection (env-var flow)`);
+  } else {
+    setupMode = true;
+    console.log(`[INIT] ⚠️  No Edge identity and no SITE_ID configured`);
+    console.log(`[INIT]    Starting in SETUP MODE — open http://localhost:${config.http.port} to activate`);
+    return startSetupMode();
   }
   
   // ─────────────────────────────────────────────────────────────────────────────
@@ -594,6 +1134,10 @@ async function main() {
   console.log("[INIT] Initializing Offline Batch Manager...");
   initOfflineBatchManager();
   console.log("[INIT] ✓ Offline Batch Manager ready");
+
+  console.log("[INIT] Initializing printers & dispatch...");
+  await initPrinters();
+  console.log(`[INIT] ✓ Printers ready (${getPrinterManager().getPrinters().length} configured)`);
   
   // Set up device event listeners for logging
   deviceManager.on("registered", (device) => {
@@ -678,21 +1222,10 @@ async function main() {
     queueWhenOffline: true,
   });
 
-  // Bootstrap strict UUID edge identity before normal Cloud activity.
-  if (!state.edgeId || !isValidUuid(state.edgeId)) {
-    try {
-      await ensureEdgeIdentity("missing_or_invalid");
-      console.log("[INIT] ✓ Edge identity bootstrap complete");
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      console.error(`[INIT] Edge identity bootstrap failed: ${msg}`);
-      console.log("[INIT] Continuing startup; registration will retry on Cloud requests.");
-    }
-  }
-  
-  // Set up REST client event handlers
+  // Set up REST client event handlers BEFORE any request can fire,
+  // so the first "connected" event from bootstrap is not missed.
   const offlineBatchManager = getOfflineBatchManager();
-  
+
   restClient.on("connected", async () => {
     console.log("[CLOUD] ✓ Connected to Cloud");
     state.cloudConnection = "connected";
@@ -722,6 +1255,11 @@ async function main() {
       offlineBatchManager.endBatch(batch.id);
       console.log(`[OfflineBatch] Ended batch ${batch.id} on Cloud reconnect`);
     }
+
+    // Push current printer inventory so Django can map globalPrinterIds
+    getCloudSyncService().pushPrinterInventory().catch((e) => {
+      console.warn("[CLOUD] Printer inventory push failed:", e instanceof Error ? e.message : String(e));
+    });
   });
   
   restClient.on("disconnected", () => {
@@ -757,7 +1295,21 @@ async function main() {
   restClient.on("state_change", (data: { previousStatus: string; currentStatus: CloudConnectionState }) => {
     state.cloudConnection = data.currentStatus;
   });
-  
+
+  // Bootstrap strict UUID edge identity before normal Cloud activity.
+  // Listeners above are now registered, so the first "connected" event
+  // emitted during bootstrap will fire pushPrinterInventory() etc.
+  if (!state.edgeId || !isValidUuid(state.edgeId)) {
+    try {
+      await ensureEdgeIdentity("missing_or_invalid");
+      console.log("[INIT] ✓ Edge identity bootstrap complete");
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error(`[INIT] Edge identity bootstrap failed: ${msg}`);
+      console.log("[INIT] Continuing startup; registration will retry on Cloud requests.");
+    }
+  }
+
   // Set up session polling
   const sessionCache = getSessionCacheManager();
   sessionCache.setRestClient(restClient);
@@ -804,7 +1356,8 @@ async function main() {
       // Health check
       if (path === "/health") {
         return Response.json({ 
-          status: "ok", 
+          status: setupMode ? "setup" : "ok", 
+          setupMode,
           timestamp: new Date().toISOString(),
           edgeId: state.edgeId,
           cloudConnection: state.cloudConnection,
@@ -908,6 +1461,7 @@ function buildHeartbeatPayload(): HeartbeatPayload {
   const deviceManager = getDeviceManager();
   const devices = deviceManager.getAllDevices();
   const uptimeSec = Math.floor((Date.now() - state.startedAt.getTime()) / 1000);
+  const printerRows = getPrinterManager().getPrinters();
   return {
     version: EDGE_VERSION,
     uptimeSec,
@@ -919,6 +1473,11 @@ function buildHeartbeatPayload(): HeartbeatPayload {
       status: d.status,
       lastHeartbeatAt: d.lastHeartbeatAt?.toISOString() ?? new Date(0).toISOString(),
       lastEventAt: d.lastEventAt?.toISOString() ?? undefined,
+    })),
+    printers: printerRows.map(p => ({
+      localPrinterId: p.printer_id,
+      status: p.status,
+      lastSeenAt: p.last_seen_at ?? null,
     })),
   };
 }
@@ -1054,6 +1613,9 @@ async function shutdown(): Promise<void> {
   console.log("[SHUTDOWN] Stopping session polling...");
   const sessionCache = getSessionCacheManager();
   sessionCache.stopPolling();
+
+  console.log("[SHUTDOWN] Stopping printer dispatcher & manager...");
+  destroyPrinters();
   
   console.log("[SHUTDOWN] Closing REST client...");
   destroyRestClient();
@@ -1381,6 +1943,181 @@ async function handleApi(req: Request, path: string): Promise<Response> {
       data: getAllEdgeConfig(),
     });
   }
+
+  // POST /api/print-jobs
+  if (path === "/api/print-jobs" && req.method === "POST") {
+    try {
+      const body = (await req.json()) as {
+        prnContent?: string;
+        targetRole?: string;
+        targetPrinter?: string;
+        labelCount?: number;
+        globalJobId?: string;
+      };
+      if (typeof body.prnContent !== "string" || !body.prnContent.length) {
+        return Response.json(
+          { success: false, error: "prnContent (non-empty string) required" },
+          { status: 400 }
+        );
+      }
+      if (!body.targetRole && !body.targetPrinter) {
+        return Response.json(
+          { success: false, error: "targetRole or targetPrinter required" },
+          { status: 400 }
+        );
+      }
+      const prnBytes = Buffer.from(iconv.encode(body.prnContent, "windows-1254"));
+      const jobId = enqueue({
+        prnBytes,
+        targetRole: body.targetRole ?? null,
+        targetPrinter: body.targetPrinter ?? null,
+        source: "local-api",
+        globalJobId: body.globalJobId ?? null,
+        labelCount: body.labelCount,
+      });
+      return Response.json({ success: true, data: { jobId } });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Invalid JSON body";
+      return Response.json({ success: false, error: msg }, { status: 400 });
+    }
+  }
+
+  // GET /api/print-jobs
+  if (path === "/api/print-jobs" && req.method === "GET") {
+    const url = new URL(req.url);
+    const status = (url.searchParams.get("status") || undefined) as
+      | "pending"
+      | "dispatching"
+      | "printed"
+      | "failed"
+      | undefined;
+    const limit = parseInt(url.searchParams.get("limit") || "100", 10);
+    const jobs = getJobs({ status, limit });
+    return Response.json({ success: true, data: jobs });
+  }
+
+  // GET /api/printers
+  if (path === "/api/printers" && req.method === "GET") {
+    const mgr = getPrinterManager();
+    const list = mgr.getPrinters();
+    return Response.json({ success: true, data: list });
+  }
+
+  // POST /api/printers — add/update label printer (e.g. after LAN discovery); persists in SQLite
+  if (path === "/api/printers" && req.method === "POST") {
+    try {
+      const body = (await req.json()) as {
+        printerId?: string;
+        host?: string;
+        port?: number;
+        role?: string;
+      };
+      const printerId = typeof body.printerId === "string" ? body.printerId : "";
+      const host = typeof body.host === "string" ? body.host : "";
+      const port = typeof body.port === "number" ? body.port : 9100;
+      const role = typeof body.role === "string" ? body.role : "generic";
+      const mgr = getPrinterManager();
+      const printer = await mgr.upsertConfiguredPrinter({ printerId, host, port, role });
+      getCloudSyncService()
+        .pushPrinterInventory()
+        .catch((e) =>
+          console.warn(
+            "[API] Printer inventory push after add:",
+            e instanceof Error ? e.message : String(e)
+          )
+        );
+      return Response.json({
+        success: true,
+        data: {
+          printer,
+          hint:
+            "Printer saved on this Edge. For new deployments, also set PRINTERS in .env to match.",
+        },
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return Response.json({ success: false, error: msg }, { status: 400 });
+    }
+  }
+
+  // GET /api/printers/discover/defaults — suggested /24 from Edge primary IP
+  if (path === "/api/printers/discover/defaults" && req.method === "GET") {
+    const localIp = getPrimaryLocalIp();
+    const localIps = getLocalIpAddresses();
+    return Response.json({
+      success: true,
+      data: {
+        localIp,
+        localIps,
+        suggestedSubnet: suggestSubnetFromIp(localIp) || null,
+      },
+    });
+  }
+
+  // POST /api/printers/discover — TCP :9100 sweep + optional TSC HTTP check
+  if (path === "/api/printers/discover" && req.method === "POST") {
+    try {
+      const body = (await req.json()) as {
+        subnet?: string;
+        localBaseIp?: string;
+        tcpPort?: number;
+        tcpTimeoutMs?: number;
+        httpTimeoutMs?: number;
+        concurrency?: number;
+        probeWeb?: boolean;
+      };
+      const localIp = getPrimaryLocalIp();
+      const candidates = await discoverPrinterCandidates({
+        subnet: body.subnet,
+        localBaseIp: body.localBaseIp ?? (body.subnet ? undefined : localIp),
+        tcpPort: body.tcpPort,
+        tcpTimeoutMs: body.tcpTimeoutMs,
+        httpTimeoutMs: body.httpTimeoutMs,
+        concurrency: body.concurrency,
+        probeWeb: body.probeWeb,
+      });
+      return Response.json({
+        success: true,
+        data: {
+          scannedFrom: body.subnet?.trim() || suggestSubnetFromIp(localIp) || localIp,
+          candidates,
+          count: candidates.length,
+        },
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return Response.json({ success: false, error: msg }, { status: 400 });
+    }
+  }
+
+  // POST /api/printers/:id/test
+  const printerTestMatch = path.match(/^\/api\/printers\/([^/]+)\/test$/);
+  if (printerTestMatch && req.method === "POST") {
+    const printerId = printerTestMatch[1];
+    const mgr = getPrinterManager();
+    if (!mgr.getPrinterById(printerId)) {
+      return Response.json({ success: false, error: `Unknown printer: ${printerId}` }, { status: 404 });
+    }
+    const testPrn =
+      'SIZE 40 mm,30 mm\r\nCLS\r\nTEXT 10,10,"0","CarniTrack test"\r\nPRINT 1,1\r\n';
+    const prnBytes = Buffer.from(iconv.encode(testPrn, "windows-1254"));
+    const jobId = enqueue({
+      prnBytes,
+      targetPrinter: printerId,
+      source: "local-api",
+    });
+    return Response.json({ success: true, data: { jobId } });
+  }
+
+  // GET /api/print-jobs/:id (optional — useful for single job without blob)
+  const printJobIdMatch = path.match(/^\/api\/print-jobs\/([^/]+)$/);
+  if (printJobIdMatch && req.method === "GET") {
+    const job = getJobPublic(printJobIdMatch[1]);
+    if (!job) {
+      return Response.json({ success: false, error: "Job not found" }, { status: 404 });
+    }
+    return Response.json({ success: true, data: job });
+  }
   
   return Response.json({ success: false, error: "Not found" }, { status: 404 });
 }
@@ -1395,7 +2132,7 @@ function getAdminDashboardHtml(): string {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>CarniTrack Edge - Admin</title>
+  <title>Carnitrack_EDGE — Web UI</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap');
     
@@ -1518,6 +2255,8 @@ function getAdminDashboardHtml(): string {
     .device-status.idle { background: var(--accent-blue); }
     .device-status.stale { background: var(--accent-orange); }
     .device-status.disconnected { background: var(--accent-red); }
+    .device-status.unknown { background: var(--text-muted); }
+    .device-status.error { background: var(--accent-red); }
     
     .device-info { flex: 1; min-width: 0; }
     .device-name { font-weight: 600; font-size: 0.85rem; display: flex; align-items: center; gap: 0.5rem; }
@@ -1608,13 +2347,26 @@ function getAdminDashboardHtml(): string {
     }
     
     @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+    .discover-toolbar { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-bottom: 1rem; }
+    .discover-toolbar input { flex: 1; min-width: 180px; max-width: 320px; }
+    .disc-table { width: 100%; border-collapse: collapse; font-size: 0.72rem; }
+    .disc-table th, .disc-table td { text-align: left; padding: 0.45rem 0.5rem; border-bottom: 1px solid var(--border-color); }
+    .disc-table th { color: var(--text-secondary); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.62rem; }
+    .pill { display: inline-block; padding: 0.15rem 0.45rem; border-radius: 999px; font-size: 0.62rem; font-weight: 600; }
+    .pill-yes { background: var(--accent-green-muted); color: var(--text-primary); }
+    .pill-maybe { background: var(--accent-orange); color: var(--bg-primary); }
+    .pill-no { background: var(--bg-secondary); color: var(--text-muted); }
+    .ext-link { color: var(--accent-blue); text-decoration: none; }
+    .ext-link:hover { text-decoration: underline; }
+    .subtle { font-size: 0.65rem; color: var(--text-muted); line-height: 1.4; margin-top: 0.5rem; }
   </style>
 </head>
 <body>
   <header>
     <div class="header-left">
-      <div class="logo">CARNI<span>TRACK</span></div>
-      <span class="badge badge-admin">Admin</span>
+      <div class="logo">CARNITRACK<span>_EDGE</span></div>
+      <span class="badge badge-admin">Web UI</span>
       <span class="badge badge-offline" id="mode-badge">OFFLINE</span>
     </div>
     <div class="header-right">
@@ -1653,21 +2405,39 @@ function getAdminDashboardHtml(): string {
     
     <div class="card card-wide">
       <div class="card-title">Devices</div>
+      <p class="subtle" style="margin: -0.25rem 0 0.75rem 0; font-size: 0.8rem;">Only <strong>weighing scales</strong> that connect to this Edge over TCP appear here. A host from <strong>Discover network printers</strong> is a <strong>label printer</strong> — use <strong>Add…</strong> after a scan or <code>PRINTERS</code> in env; not in this list.</p>
       <div class="device-list" id="device-list">
         <div class="empty-state">
           <div class="empty-icon">📡</div>
-          <div class="empty-text">Waiting for scale connections...</div>
+          <div class="empty-text">No scales connected yet. Label printers use <code>PRINTERS</code> in the section below.</div>
         </div>
       </div>
     </div>
     
     <div class="card card-wide">
-      <div class="card-title">TCP Stats</div>
+      <div class="card-title">TCP Stats (scales)</div>
       <div id="tcp-stats" style="font-size: 0.8rem; color: var(--text-secondary);">Loading...</div>
+    </div>
+
+    <div class="card card-wide">
+      <div class="card-title">Configured label printers</div>
+      <div id="printer-config-list" class="subtle">Loading…</div>
+    </div>
+
+    <div class="card card-wide">
+      <div class="card-title">Discover network printers</div>
+      <p class="subtle">Printers on a home/shop LAN are usually <strong>192.168.x.y</strong> (e.g. <strong>192.168.1.220</strong>). Scan that segment with <strong>192.168.1.0/24</strong> or shorthand <strong>192.168.1</strong>. Leave blank to use this machine’s detected 192.168.* address. We probe TCP <strong>9100</strong> (JetDirect / raw TSPL), then each host’s HTTP page for <strong>TSC</strong> markers. Use <strong>Add…</strong> on a row to save the printer on this Edge (shown under <em>Configured label printers</em>).</p>
+      <div class="discover-toolbar">
+        <input type="text" id="discover-subnet" class="form-input" placeholder="192.168.1.0/24 or 192.168.1" autocomplete="off">
+        <button type="button" class="btn btn-primary" id="discover-btn" onclick="runPrinterDiscover()">Scan LAN</button>
+      </div>
+      <p class="subtle" id="discover-lan-hint"></p>
+      <p class="subtle" id="discover-status"></p>
+      <div id="discover-results"></div>
     </div>
   </main>
   
-  <footer>CarniTrack Edge v0.3.0 • Admin Dashboard • Refresh: 3s</footer>
+  <footer>Carnitrack_EDGE v0.3.0 • Web UI • Scales &amp; devices refresh: 3s</footer>
   
   <!-- Edit Device Modal -->
   <div class="modal-overlay" id="edit-modal">
@@ -1700,12 +2470,195 @@ function getAdminDashboardHtml(): string {
       </form>
     </div>
   </div>
+
+  <div class="modal-overlay" id="add-printer-modal">
+    <div class="modal">
+      <div class="modal-title">Add label printer to this Edge</div>
+      <form id="add-printer-form" onsubmit="submitAddPrinter(event)">
+        <div class="form-group">
+          <label class="form-label">Host (from scan)</label>
+          <input type="text" class="form-input" id="add-printer-host" readonly>
+        </div>
+        <div class="form-group">
+          <label class="form-label">TCP port</label>
+          <input type="number" class="form-input" id="add-printer-port" min="1" max="65535" value="9100">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Printer ID</label>
+          <input type="text" class="form-input" id="add-printer-id" placeholder="e.g. carcass, label-1" required pattern="[a-zA-Z0-9_-]{1,64}" autocomplete="off">
+          <div class="form-hint">Letters, digits, underscore, hyphen (matches <code>PRINTERS</code> first field)</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Role</label>
+          <select class="form-input" id="add-printer-role">
+            <option value="carcass">carcass</option>
+            <option value="meat_cut">meat_cut</option>
+            <option value="offal">offal</option>
+            <option value="by_product">by_product</option>
+            <option value="animal">animal</option>
+            <option value="generic" selected>generic</option>
+          </select>
+        </div>
+        <p class="subtle" id="add-printer-err" style="color: var(--danger, #c44); margin: 0;"></p>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-cancel" onclick="closeAddPrinterModal()">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save on Edge</button>
+        </div>
+      </form>
+    </div>
+  </div>
   
   <script>
     let devices = [];
+    let discoverSubnetInited = false;
+
+    (function bindDiscoverAddPrinter() {
+      var dr = document.getElementById('discover-results');
+      if (!dr) return;
+      dr.addEventListener('click', function (ev) {
+        var btn = ev.target.closest('.add-printer-btn');
+        if (!btn) return;
+        openAddPrinterModal(btn.getAttribute('data-host') || '', parseInt(btn.getAttribute('data-port') || '9100', 10) || 9100);
+      });
+    })();
+
+    function suggestPrinterIdFromHost(host) {
+      return 'label-' + String(host).replace(/\./g, '-');
+    }
+
+    function openAddPrinterModal(host, port) {
+      document.getElementById('add-printer-host').value = host;
+      document.getElementById('add-printer-port').value = port;
+      document.getElementById('add-printer-id').value = suggestPrinterIdFromHost(host);
+      document.getElementById('add-printer-err').textContent = '';
+      document.getElementById('add-printer-modal').classList.add('open');
+    }
+
+    function closeAddPrinterModal() {
+      document.getElementById('add-printer-modal').classList.remove('open');
+    }
+
+    async function submitAddPrinter(ev) {
+      ev.preventDefault();
+      var errEl = document.getElementById('add-printer-err');
+      errEl.textContent = '';
+      var host = document.getElementById('add-printer-host').value.trim();
+      var port = parseInt(document.getElementById('add-printer-port').value, 10) || 9100;
+      var printerId = document.getElementById('add-printer-id').value.trim();
+      var role = document.getElementById('add-printer-role').value;
+      try {
+        var r = await fetch('/api/printers', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ printerId: printerId, host: host, port: port, role: role }),
+        });
+        var j = await r.json();
+        if (!j.success) throw new Error(j.error || 'Save failed');
+        closeAddPrinterModal();
+        await renderConfiguredPrinters();
+        var st = document.getElementById('discover-status');
+        st.textContent =
+          'Saved printer ' +
+          escapeHtml(printerId) +
+          ' at ' +
+          escapeHtml(host) +
+          ':' +
+          port +
+          ' (status: ' +
+          escapeHtml(j.data.printer.status || '—') +
+          ').';
+      } catch (e) {
+        errEl.textContent = e.message || String(e);
+      }
+    }
+
+    async function initDiscoverSubnet() {
+      if (discoverSubnetInited) return;
+      discoverSubnetInited = true;
+      try {
+        const r = await fetch('/api/printers/discover/defaults');
+        const j = await r.json();
+        const el = document.getElementById('discover-subnet');
+        if (j.success && el && !el.value) {
+          if (j.data.suggestedSubnet) {
+            el.value = j.data.suggestedSubnet;
+          } else if (j.data.localIp === '127.0.0.1' || !j.data.localIps || j.data.localIps.length === 0) {
+            el.value = '192.168.1.0/24';
+          }
+        }
+        var hint = document.getElementById('discover-lan-hint');
+        if (hint && j.success && j.data.localIps && j.data.localIps.length > 1 && j.data.localIp) {
+          hint.textContent = 'Using LAN base IP ' + j.data.localIp + ' for auto-scan (all IPv4: ' + j.data.localIps.join(', ') + '). Set HOST_IP or enter subnet if printers are on another interface.';
+        }
+      } catch (e) { console.warn('discover defaults', e); }
+    }
+
+    function escapeHtml(s) {
+      if (!s) return '';
+      return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    async function renderConfiguredPrinters() {
+      const el = document.getElementById('printer-config-list');
+      try {
+        const r = await fetch('/api/printers');
+        const j = await r.json();
+        if (!j.success || !j.data || !j.data.length) {
+          el.innerHTML = 'No printers yet. Run a scan below and click <strong>Add…</strong> on a host, or set <code>PRINTERS</code> in env, e.g. <code>PRINTERS=carcass:192.168.1.50:9100:role=carcass</code>.';
+          return;
+        }
+        el.innerHTML = '<table class="disc-table"><thead><tr><th>ID</th><th>Host:port</th><th>Role</th><th>Status</th><th>TSC web UI</th></tr></thead><tbody>' +
+          j.data.map(function(p) {
+            var web = 'http://' + p.host + '/';
+            return '<tr><td>' + escapeHtml(p.printer_id) + '</td><td><code>' + escapeHtml(p.host) + ':' + p.port + '</code></td><td>' + escapeHtml(p.role) + '</td><td>' + escapeHtml(p.status) + '</td><td><a class="ext-link" href="' + web + '" target="_blank" rel="noopener noreferrer">Open UI</a></td></tr>';
+          }).join('') + '</tbody></table>';
+      } catch (e) {
+        el.textContent = 'Failed to load printers';
+      }
+    }
+
+    async function runPrinterDiscover() {
+      var btn = document.getElementById('discover-btn');
+      var st = document.getElementById('discover-status');
+      var res = document.getElementById('discover-results');
+      var subnetEl = document.getElementById('discover-subnet');
+      var subnet = subnetEl ? subnetEl.value.trim() : '';
+      if (btn) btn.disabled = true;
+      st.textContent = 'Scanning TCP 9100, then probing http://IP/ …';
+      res.innerHTML = '';
+      try {
+        var payload = { probeWeb: true };
+        if (subnet) payload.subnet = subnet;
+        var r = await fetch('/api/printers/discover', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        var j = await r.json();
+        if (!j.success) throw new Error(j.error || 'scan failed');
+        st.textContent = 'Found ' + j.data.count + ' host(s) with port 9100 open (from ' + escapeHtml(j.data.scannedFrom) + ').';
+        if (!j.data.candidates.length) {
+          res.innerHTML = '<p class="subtle">No open 9100 ports in this range. Try another subnet or check the printer IP.</p>';
+          return;
+        }
+        var ex = j.data.candidates[0].ip;
+        res.innerHTML = '<table class="disc-table"><thead><tr><th>IP</th><th>:9100</th><th>HTTP page</th><th>Match</th><th>Add</th></tr></thead><tbody>' +
+          j.data.candidates.map(function(c) {
+            var w = c.webUi || {};
+            var conf = w.looksLikeTsc ? '<span class="pill pill-yes">Likely TSC</span>' : (w.reachable ? '<span class="pill pill-maybe">HTTP only</span>' : '<span class="pill pill-no">No HTTP</span>');
+            var title = w.title ? (' <span class="subtle">' + escapeHtml(w.title).slice(0, 72) + '</span>') : '';
+            var link = w.url ? ('<a class="ext-link" href="' + w.url + '" target="_blank" rel="noopener noreferrer">Open</a>' + title) : '—';
+            var hint = w.error ? (' <span class="subtle">(' + escapeHtml(w.error).slice(0, 96) + ')</span>') : '';
+            var addBtn = '<button type="button" class="btn btn-primary add-printer-btn" style="padding:0.25rem 0.55rem;font-size:0.68rem;white-space:nowrap" data-host="' + c.ip + '" data-port="' + c.tcpPort + '">Add…</button>';
+            return '<tr><td><code>' + c.ip + '</code></td><td><span class="pill pill-yes">open</span></td><td>' + link + hint + '</td><td>' + conf + '</td><td>' + addBtn + '</td></tr>';
+          }).join('') + '</tbody></table>' +
+          '<p class="subtle">Optional env line (for new installs): <code>PRINTERS=carcass:' + ex + ':9100:role=carcass</code></p>';
+      } catch (e) {
+        st.textContent = 'Error: ' + (e.message || e);
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    }
     
     async function update() {
       try {
+        initDiscoverSubnet();
         // Fetch status for stats
         const statusRes = await fetch('/api/status');
         const { data: statusData } = await statusRes.json();
@@ -1742,6 +2695,7 @@ function getAdminDashboardHtml(): string {
           : 'Edge: Not Registered';
         
         renderDevices();
+        renderConfiguredPrinters();
         
         if (statusData.tcp) {
           document.getElementById('tcp-stats').innerHTML = 
@@ -1753,7 +2707,7 @@ function getAdminDashboardHtml(): string {
     function renderDevices() {
       const list = document.getElementById('device-list');
       if (devices.length === 0) {
-        list.innerHTML = '<div class="empty-state"><div class="empty-icon">📡</div><div class="empty-text">Waiting for scale connections...</div></div>';
+        list.innerHTML = '<div class="empty-state"><div class="empty-icon">📡</div><div class="empty-text">No scales connected yet. Label printers use <code>PRINTERS</code> in the section below.</div></div>';
         return;
       }
       
@@ -1853,7 +2807,52 @@ function getAdminDashboardHtml(): string {
 // RUN
 // ═══════════════════════════════════════════════════════════════════════════════
 
-main().catch((err) => {
-  console.error("[FATAL]", err);
+const isCompiled =
+  (import.meta.dir && import.meta.dir.includes("~BUN")) ||
+  (typeof Bun !== "undefined" && Bun.main === process.execPath);
+
+function writeCrashLog(error: unknown): void {
+  try {
+    const { writeFileSync, mkdirSync, existsSync: dirExists } = require("fs");
+    const { dirname: dn, join: pjoin, resolve: pResolve } = require("path");
+    const logDir = isCompiled
+      ? pjoin(dn(pResolve(process.argv[0] || process.execPath)), "logs")
+      : pjoin(import.meta.dir, "..", "logs");
+    if (!dirExists(logDir)) mkdirSync(logDir, { recursive: true });
+    const ts = new Date().toISOString().replace(/[:.]/g, "-");
+    const logFile = pjoin(logDir, `crash-${ts}.log`);
+    const msg = error instanceof Error
+      ? `${error.message}\n\n${error.stack}`
+      : String(error);
+    writeFileSync(logFile, `CarniTrack Edge Crash — ${new Date().toISOString()}\n\n${msg}\n`);
+    console.error(`[CRASH] Log written to: ${logFile}`);
+  } catch {
+    // best-effort
+  }
+}
+
+async function waitForEnter(): Promise<void> {
+  if (!isCompiled) return;
+  console.log("");
+  console.log("Press ENTER to close this window...");
+  return new Promise((resolve) => {
+    process.stdin.resume();
+    process.stdin.once("data", () => resolve());
+  });
+}
+
+main().catch(async (err) => {
+  console.error("");
+  console.error("╔═══════════════════════════════════════════════════════════════╗");
+  console.error("║  CarniTrack Edge — STARTUP FAILED                            ║");
+  console.error("╠═══════════════════════════════════════════════════════════════╣");
+  console.error(`║  ${String(err?.message || err).substring(0, 59).padEnd(59)}║`);
+  console.error("╚═══════════════════════════════════════════════════════════════╝");
+  console.error("");
+  if (err instanceof Error && err.stack) {
+    console.error(err.stack);
+  }
+  writeCrashLog(err);
+  await waitForEnter();
   process.exit(1);
 });
