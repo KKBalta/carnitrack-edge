@@ -226,8 +226,8 @@ export const config = {
     retryMaxDelayMs: Number(process.env.PRINTER_RETRY_MAX_MS) || 60_000,
     /** How often edge polls Django for pending print jobs (ms); after 304 streak, interval backs off up to max */
     printJobPollIntervalMs: Number(process.env.PRINT_JOB_POLL_INTERVAL_MS) || 5_000,
-    /** Max delay between print-job polls when cloud keeps returning 304 (ms). Set equal to base to disable backoff. */
-    printJobPollMaxIntervalMs: Number(process.env.PRINT_JOB_POLL_MAX_INTERVAL_MS) || 120_000,
+    /** Max delay between print-job polls when cloud keeps returning 304 (ms). Default equals base interval (no backoff). */
+    printJobPollMaxIntervalMs: Number(process.env.PRINT_JOB_POLL_MAX_INTERVAL_MS) || 5_000,
   },
   // ═══════════════════════════════════════════════════════════════════════════
   // WORK HOURS (for alert thresholds)

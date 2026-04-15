@@ -270,6 +270,7 @@ CREATE TABLE IF NOT EXISTS printers (
   last_seen_at       TEXT,
   last_error         TEXT,
   version            TEXT,
+  warnings           TEXT NOT NULL DEFAULT '',
   created_at         TEXT NOT NULL
 );
 
@@ -353,6 +354,15 @@ export function initDatabase(): Database {
     console.log(`[DB] Adding tare_grams column to events table...`);
     database.exec(`ALTER TABLE events ADD COLUMN tare_grams INTEGER DEFAULT 0`);
     console.log(`[DB] ✓ Migration complete: tare_grams column added`);
+  }
+
+  // Migration: Add warnings column to printers table (if it doesn't exist)
+  try {
+    database.exec(`SELECT warnings FROM printers LIMIT 1`);
+  } catch (e) {
+    console.log(`[DB] Adding warnings column to printers table...`);
+    database.exec(`ALTER TABLE printers ADD COLUMN warnings TEXT NOT NULL DEFAULT ''`);
+    console.log(`[DB] ✓ Migration complete: warnings column added`);
   }
   
   // Store reference

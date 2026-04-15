@@ -1175,7 +1175,16 @@ async function main() {
 
   console.log("[INIT] Initializing printers & dispatch...");
   await initPrinters();
-  console.log(`[INIT] ✓ Printers ready (${getPrinterManager().getPrinters().length} configured)`);
+  const startupPrinters = getPrinterManager().getPrinters();
+  console.log(`[INIT] ✓ Printers ready (${startupPrinters.length} configured)`);
+  for (const p of startupPrinters) {
+    const warn =
+      p.warnings && p.warnings.length > 0 ? ` warnings=${p.warnings}` : "";
+    const err = p.last_error ? ` error="${p.last_error}"` : "";
+    console.log(
+      `[INIT]    • ${p.printer_id} role=${p.role} ${p.host}:${p.port} status=${p.status}${warn}${err}`
+    );
+  }
   
   // Set up device event listeners for logging
   deviceManager.on("registered", (device) => {
@@ -1519,6 +1528,7 @@ function buildHeartbeatPayload(): HeartbeatPayload {
       status: p.status,
       lastSeenAt: p.last_seen_at ?? null,
       lastError: p.last_error ?? null,
+      warnings: p.warnings ? p.warnings.split(",").filter(Boolean) : [],
     })),
   };
 }
@@ -1532,8 +1542,19 @@ async function sendAggregatedHeartbeat(): Promise<boolean> {
   try {
     const response = await restClient.postHeartbeat(payload);
     if (response.ok) {
+      const printerSummary =
+        payload.printers && payload.printers.length > 0
+          ? payload.printers
+              .map(
+                (p) =>
+                  `${p.localPrinterId}=${p.status}${
+                    p.warnings && p.warnings.length > 0 ? `(${p.warnings.join("|")})` : ""
+                  }${p.lastError ? `[${p.lastError}]` : ""}`
+              )
+              .join(",")
+          : "none";
       console.log(
-        `[HEARTBEAT] ✓ POST /heartbeat ok (edgeId=${state.edgeId}, devices=${payload.devices.length}, health=${payload.health})`
+        `[HEARTBEAT] ✓ POST /heartbeat ok (edgeId=${state.edgeId}, devices=${payload.devices.length}, printers=${payload.printers?.length ?? 0} [${printerSummary}], health=${payload.health})`
       );
       return true;
     }

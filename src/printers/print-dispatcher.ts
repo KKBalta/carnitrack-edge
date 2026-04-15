@@ -20,6 +20,11 @@ import { getRestClient } from "../cloud/rest-client.ts";
 let dispatchTimer: ReturnType<typeof setInterval> | null = null;
 const inFlight = new Set<string>();
 
+/** True when the dispatcher is currently holding the TCP socket for `printerId`. */
+export function isInFlight(printerId: string): boolean {
+  return inFlight.has(printerId);
+}
+
 function resolveGlobalPrinterId(localPrinterId: string | null): string | null {
   if (!localPrinterId) return null;
   return getPrinterById(localPrinterId)?.global_printer_id ?? null;

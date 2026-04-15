@@ -4,7 +4,8 @@
 
 import { getDatabase, nowISO } from "../storage/database.ts";
 import { config } from "../config.ts";
-import { TcpPrinterClient, PrinterStatus, describeStatus } from "./tcp-printer-client.ts";
+import { TcpPrinterClient } from "./tcp-printer-client.ts";
+import { isInFlight } from "./print-dispatcher.ts";
 import type { PrintJobRow } from "./print-job-queue.ts";
 
 export type PrinterRole =
@@ -30,6 +31,7 @@ export interface PrinterRecord {
   last_seen_at: string | null;
   last_error: string | null;
   version: string | null;
+  warnings: string;
   created_at: string;
 }
 
@@ -92,29 +94,54 @@ export class PrinterManager {
       config.printers.connectTimeoutMs
     );
     try {
-      await client.enableImmediate();
       let version: string | null = null;
       try {
         version = await client.getModel();
       } catch {
         version = null;
       }
-      const st = await client.getStatusByte();
-      const online = st === PrinterStatus.READY;
-      this.updatePrinterRow(printerId, {
-        version,
-        status: online ? "online" : "error",
-        last_error: online ? null : `status ${describeStatus(st)}`,
-        last_seen_at: nowISO(),
-      });
+      const health = await client.getHealthStatus();
+      this.applyHealthResult(printerId, health, { version });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       this.updatePrinterRow(printerId, {
         status: "error",
         last_error: msg,
+        warnings: "",
         last_seen_at: nowISO(),
       });
     }
+  }
+
+  /** Map a `PrinterHealthResult` to status/last_error/warnings columns. */
+  private applyHealthResult(
+    printerId: string,
+    health: { isReady: boolean; warnings: string[]; errors: string[]; statusLabel: string },
+    extra: { version?: string | null } = {}
+  ): void {
+    let status: string;
+    let last_error: string | null;
+    let warnings: string;
+    if (health.isReady && health.warnings.length === 0) {
+      status = "online";
+      last_error = null;
+      warnings = "";
+    } else if (health.isReady && health.warnings.length > 0) {
+      status = "warning";
+      last_error = null;
+      warnings = health.warnings.join(",");
+    } else {
+      status = "error";
+      last_error = health.errors.length > 0 ? health.errors.join(", ") : health.statusLabel;
+      warnings = "";
+    }
+    this.updatePrinterRow(printerId, {
+      ...extra,
+      status,
+      last_error,
+      warnings,
+      last_seen_at: nowISO(),
+    });
   }
 
   private getDbPrinter(printerId: string): PrinterRecord | null {
@@ -133,6 +160,7 @@ export class PrinterManager {
       status: string;
       last_error: string | null;
       last_seen_at: string | null;
+      warnings: string;
     }>
   ): void {
     const db = getDatabase();
@@ -154,6 +182,10 @@ export class PrinterManager {
       sets.push("last_seen_at = ?");
       args.push(patch.last_seen_at);
     }
+    if (patch.warnings !== undefined) {
+      sets.push("warnings = ?");
+      args.push(patch.warnings);
+    }
     if (sets.length === 0) return;
     args.push(printerId);
     db.prepare(`UPDATE printers SET ${sets.join(", ")} WHERE printer_id = ?`).run(
@@ -165,6 +197,7 @@ export class PrinterManager {
     this.updatePrinterRow(printerId, {
       status: "online",
       last_error: null,
+      warnings: "",
       last_seen_at: nowISO(),
     });
   }
@@ -173,6 +206,7 @@ export class PrinterManager {
     this.updatePrinterRow(printerId, {
       status: "error",
       last_error: message,
+      warnings: "",
       last_seen_at: nowISO(),
     });
   }
@@ -242,11 +276,15 @@ export class PrinterManager {
   }
 
   resolvePrinter(job: PrintJobRow): PrinterRecord | null {
-    const all = this.getPrinters().filter((p) => p.enabled === 1 && p.status !== "error");
+    // "warning" printers (e.g. paper_low) are still eligible: production
+    // continues, operator gets advance notice.
+    const isDispatchable = (p: PrinterRecord) =>
+      p.enabled === 1 && p.status !== "error" && p.status !== "offline";
+    const all = this.getPrinters().filter(isDispatchable);
 
     if (job.target_printer) {
       const p = this.getPrinterById(job.target_printer);
-      if (p && p.enabled === 1 && p.status !== "error") return p;
+      if (p && isDispatchable(p)) return p;
       return null;
     }
 
@@ -254,7 +292,8 @@ export class PrinterManager {
     const candidates = all.filter((p) => p.role === job.target_role);
     if (candidates.length === 0) return null;
 
-    const statusRank = (s: string) => (s === "online" ? 0 : s === "unknown" ? 1 : 2);
+    const statusRank = (s: string) =>
+      s === "online" || s === "warning" ? 0 : s === "unknown" ? 1 : 2;
     candidates.sort((a, b) => {
       if (a.priority !== b.priority) return a.priority - b.priority;
       const sr = statusRank(a.status) - statusRank(b.status);
@@ -268,25 +307,25 @@ export class PrinterManager {
     const rows = this.getPrinters();
     for (const p of rows) {
       if (!p.enabled) continue;
+      // TE210 only accepts one TCP session on :9100. If the dispatcher is
+      // currently sending a job to this printer, opening a second connection
+      // would race and write a bogus "error" status. Skip — the dispatcher
+      // already updates status on success/failure.
+      if (isInFlight(p.printer_id)) continue;
       const client = new TcpPrinterClient(
         p.host,
         p.port,
         config.printers.connectTimeoutMs
       );
       try {
-        await client.enableImmediate();
-        const st = await client.getStatusByte();
-        const ok = st === PrinterStatus.READY || st === PrinterStatus.PRINTING;
-        this.updatePrinterRow(p.printer_id, {
-          status: ok ? "online" : "error",
-          last_error: ok ? null : describeStatus(st),
-          last_seen_at: nowISO(),
-        });
+        const health = await client.getHealthStatus();
+        this.applyHealthResult(p.printer_id, health);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         this.updatePrinterRow(p.printer_id, {
           status: "error",
           last_error: msg,
+          warnings: "",
           last_seen_at: nowISO(),
         });
       }
@@ -340,6 +379,7 @@ export function parsePrintersConfigString(configString: string): PrinterRecord[]
       last_seen_at: null,
       last_error: null,
       version: null,
+      warnings: "",
       created_at: nowISO(),
     });
     basePriority += 10;

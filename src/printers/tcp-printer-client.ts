@@ -70,6 +70,50 @@ const ESC_S_ERR4_BYTE4: Record<number, string> = {
   0x60: "Error byte4: print head open",
 };
 
+export interface PrinterHealthResult {
+  /** Coarse status byte from `<ESC>!?` (0x00 ready, 0x20 printing, …). */
+  statusByte: number;
+  /** Human-readable label for `statusByte` (see `describeStatus`). */
+  statusLabel: string;
+  /** True when statusByte is READY (0x00) or PRINTING (0x20). */
+  isReady: boolean;
+  /** Decoded warnings from `<ESC>!S` byte 2 (e.g. `paper_low`, `ribbon_low`). */
+  warnings: string[];
+  /** Decoded errors from `<ESC>!S` bytes 3-4 (e.g. `paper_empty`, `head_open`). */
+  errors: string[];
+  /** Raw 8-byte `<ESC>!S` frame in hex (empty string if firmware did not respond). */
+  extendedRawHex: string;
+}
+
+/** Decode `<ESC>!S` byte 2 (warnings) into machine tokens. */
+export function extractWarnings(buf: Buffer | null): string[] {
+  if (!buf || buf.length < 8) return [];
+  const b2 = buf[2]!;
+  const out: string[] = [];
+  if (b2 === 0x41) out.push("paper_low");
+  if (b2 === 0x42) out.push("ribbon_low");
+  return out;
+}
+
+/** Decode `<ESC>!S` bytes 3 and 4 (hardware + media errors) into machine tokens. */
+export function extractErrors(buf: Buffer | null): string[] {
+  if (!buf || buf.length < 8) return [];
+  const out: string[] = [];
+  const b3 = buf[3]!;
+  if (b3 === 0x41) out.push("head_overheat");
+  else if (b3 === 0x42) out.push("motor_overheat");
+  else if (b3 === 0x44) out.push("head_error");
+  else if (b3 === 0x48) out.push("cutter_jam");
+  else if (b3 === 0x50) out.push("memory_full");
+  const b4 = buf[4]!;
+  if (b4 === 0x41) out.push("paper_empty");
+  else if (b4 === 0x42) out.push("paper_jam");
+  else if (b4 === 0x44) out.push("ribbon_empty");
+  else if (b4 === 0x48) out.push("ribbon_jam");
+  else if (b4 === 0x60) out.push("head_open");
+  return out;
+}
+
 export interface PrinterDiagnosticsExtended {
   rawHex: string;
   frameOk: boolean;
@@ -293,6 +337,40 @@ export class TcpPrinterClient {
       await writeAll(s, CMD_STATUS_BYTE);
       const buf = await readBytes(s, 1, 1_500);
       return buf[0];
+    });
+  }
+
+  /**
+   * Single TCP session: enable immediate-mode, then `<ESC>!?` (1 byte) and
+   * `<ESC>!S` (8 bytes). The extended-status read is best-effort — older
+   * firmware that does not respond degrades to coarse status only.
+   */
+  async getHealthStatus(): Promise<PrinterHealthResult> {
+    return withSocket(this.host, this.port, this.connectTimeoutMs, async (s) => {
+      await writeAll(s, iconv.encode("~!E\r\n", "windows-1254"));
+      await writeAll(s, CMD_STATUS_BYTE);
+      const sb = await readBytes(s, 1, 1_500);
+      const statusByte = sb[0]!;
+
+      let extBuf: Buffer | null = null;
+      try {
+        await writeAll(s, CMD_STATUS_EXT);
+        extBuf = await readBytes(s, 8, 1_500);
+      } catch {
+        extBuf = null;
+      }
+
+      const isReady =
+        statusByte === PrinterStatus.READY || statusByte === PrinterStatus.PRINTING;
+
+      return {
+        statusByte,
+        statusLabel: describeStatus(statusByte),
+        isReady,
+        warnings: extractWarnings(extBuf),
+        errors: extractErrors(extBuf),
+        extendedRawHex: extBuf ? extBuf.toString("hex") : "",
+      };
     });
   }
 

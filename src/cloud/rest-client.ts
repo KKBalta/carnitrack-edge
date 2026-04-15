@@ -126,6 +126,8 @@ export interface HeartbeatPrinterEntry {
   status: string;
   lastSeenAt: string | null;
   lastError?: string | null;
+  /** TSPL warnings extracted from `<ESC>!S` (e.g. `paper_low`, `ribbon_low`). */
+  warnings?: string[];
 }
 
 /** Payload for POST /heartbeat (aggregated connectivity + device status) */
