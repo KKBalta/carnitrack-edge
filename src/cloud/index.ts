@@ -25,6 +25,7 @@ export {
   type HeartbeatDeviceEntry,
   type HeartbeatPrinterEntry,
   type PendingPrintJobEntry,
+  type PrintJobsPollResult,
   type PrintJobAckPayload,
   type PrinterInventoryEntry,
 } from "./rest-client.ts";

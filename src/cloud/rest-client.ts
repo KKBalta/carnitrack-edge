@@ -146,6 +146,13 @@ export interface PendingPrintJobEntry {
   createdAt: string;
 }
 
+/** GET /print-jobs/pending with ETag / 304 support (same pattern as getSessions) */
+export interface PrintJobsPollResult {
+  jobs: PendingPrintJobEntry[];
+  notModified: boolean;
+  etag: string | null;
+}
+
 /** Body for POST /print-jobs/<uuid>/ack */
 export interface PrintJobAckPayload {
   status: "completed" | "failed";
@@ -839,14 +846,23 @@ export class RestClient {
 
   /**
    * GET /print-jobs/pending - Poll for print jobs queued in Django that this edge should dispatch.
+   * Supports ETag: pass currentETag to send If-None-Match; on 304 returns notModified with empty jobs.
    */
-  async pollPendingPrintJobs(): Promise<PendingPrintJobEntry[]> {
-    const response = await this.request("GET", "/print-jobs/pending");
+  async pollPendingPrintJobs(currentETag?: string | null): Promise<PrintJobsPollResult> {
+    const headers: Record<string, string> = {};
+    if (currentETag) {
+      headers["If-None-Match"] = currentETag;
+    }
+    const response = await this.request("GET", "/print-jobs/pending", undefined, { headers });
+    if (response.status === 304) {
+      return { jobs: [], notModified: true, etag: currentETag ?? null };
+    }
     if (!response.ok) {
       throw new Error(`Poll print jobs failed: ${response.status} ${response.statusText}`);
     }
-    const data = await response.json() as { jobs?: PendingPrintJobEntry[] };
-    return data.jobs ?? [];
+    const data = (await response.json()) as { jobs?: PendingPrintJobEntry[] };
+    const newETag = response.headers.get("ETag");
+    return { jobs: data.jobs ?? [], notModified: false, etag: newETag };
   }
 
   /**

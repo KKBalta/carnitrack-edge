@@ -58,3 +58,16 @@ async function getSessions(req, res) {
 - 304 responses use minimal Cloud Run CPU (no JSON serialization, no body)
 - Edge receives instant "no change" signal instead of full payload
 - Cloud Run costs reduced by 80–95% for session polling
+
+---
+
+## Print jobs: `GET /print-jobs/pending` (Edge)
+
+The Edge polls **`GET /api/v1/edge/print-jobs/pending`** (same auth as other edge routes). Implement the **same ETag contract** as sessions:
+
+1. On **200**: body `{ "jobs": [ ... ] }`, response headers **`ETag`** (e.g. hash of sorted pending job ids + revision), **`Cache-Control: no-cache`**.
+2. On **`If-None-Match`** matching the current ETag: respond **304** with **empty body** (no JSON parse on either side).
+
+The Edge sends **`If-None-Match`** when it has a stored ETag from the last 200. After **304**, it increases an internal streak and **backs off** the poll interval up to **`PRINT_JOB_POLL_MAX_INTERVAL_MS`** (default 120s) to cut request count; after any **200** or reconnect, ETag/streak reset behaviour matches a fresh sync.
+
+**Cloud must** change ETag whenever the pending queue changes (new job, job removed/acked, content change) so the Edge never misses work.

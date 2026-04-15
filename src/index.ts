@@ -88,6 +88,7 @@ import {
   getPrinterManager,
   discoverPrinterCandidates,
   suggestSubnetFromIp,
+  TcpPrinterClient,
 } from "./printers/index.ts";
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2090,6 +2091,40 @@ async function handleApi(req: Request, path: string): Promise<Response> {
     }
   }
 
+  // GET /api/printers/:id/diagnose — TSPL / TE210 read-only status (~!T, ~!I, <ESC>!?, <ESC>!S)
+  const printerDiagnoseMatch = path.match(/^\/api\/printers\/([^/]+)\/diagnose$/);
+  if (printerDiagnoseMatch && req.method === "GET") {
+    const printerId = decodeURIComponent(printerDiagnoseMatch[1]);
+    const mgr = getPrinterManager();
+    const row = mgr.getPrinterById(printerId);
+    if (!row) {
+      return Response.json({ success: false, error: `Unknown printer: ${printerId}` }, { status: 404 });
+    }
+    try {
+      const client = new TcpPrinterClient(row.host, row.port, config.printers.connectTimeoutMs);
+      const data = await client.runDiagnostics();
+      return Response.json({
+        success: true,
+        data: {
+          printerId: row.printer_id,
+          host: row.host,
+          port: row.port,
+          ...data,
+        },
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return Response.json(
+        {
+          success: false,
+          error: msg,
+          hint: "See docs/TSC_TE210_user_manual.txt and docs/TSPL_TSPL2_programming_manual.txt; verify TCP 9100 and ~!E immediate mode.",
+        },
+        { status: 502 }
+      );
+    }
+  }
+
   // POST /api/printers/:id/test
   const printerTestMatch = path.match(/^\/api\/printers\/([^/]+)\/test$/);
   if (printerTestMatch && req.method === "POST") {
@@ -2507,6 +2542,17 @@ function getAdminDashboardHtml(): string {
       </form>
     </div>
   </div>
+
+  <div class="modal-overlay" id="printer-diag-modal">
+    <div class="modal" style="max-width: 42rem;">
+      <div class="modal-title">Printer diagnostics (TSPL / TE210)</div>
+      <p class="subtle" style="margin-top:0">Read-only queries: <code>~!E</code>, <code>&lt;ESC&gt;!?</code>, <code>&lt;ESC&gt;!S</code>, <code>~!T</code>, <code>~!I</code>. See project <code>docs/TSC_TE210_user_manual.txt</code> and <code>docs/TSPL_TSPL2_programming_manual.txt</code>.</p>
+      <pre id="printer-diag-pre" style="margin:0;max-height:60vh;overflow:auto;font-size:0.68rem;line-height:1.35;background:var(--bg-elevated,#1a1d24);padding:0.75rem;border-radius:6px;white-space:pre-wrap;word-break:break-word;">Loading…</pre>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-primary" onclick="closePrinterDiagModal()">Close</button>
+      </div>
+    </div>
+  </div>
   
   <script>
     let devices = [];
@@ -2521,6 +2567,36 @@ function getAdminDashboardHtml(): string {
         openAddPrinterModal(btn.getAttribute('data-host') || '', parseInt(btn.getAttribute('data-port') || '9100', 10) || 9100);
       });
     })();
+
+    (function bindPrinterDiagButton() {
+      var box = document.getElementById('printer-config-list');
+      if (!box || box._diagBound) return;
+      box._diagBound = true;
+      box.addEventListener('click', function (ev) {
+        var btn = ev.target.closest('.printer-diag-btn');
+        if (!btn) return;
+        var id = btn.getAttribute('data-printer-id');
+        if (id) openPrinterDiagnose(id);
+      });
+    })();
+
+    function closePrinterDiagModal() {
+      document.getElementById('printer-diag-modal').classList.remove('open');
+    }
+
+    async function openPrinterDiagnose(printerId) {
+      var pre = document.getElementById('printer-diag-pre');
+      var modal = document.getElementById('printer-diag-modal');
+      pre.textContent = 'Loading…';
+      modal.classList.add('open');
+      try {
+        var r = await fetch('/api/printers/' + encodeURIComponent(printerId) + '/diagnose');
+        var j = await r.json();
+        pre.textContent = JSON.stringify(j, null, 2);
+      } catch (e) {
+        pre.textContent = String(e.message || e);
+      }
+    }
 
     function suggestPrinterIdFromHost(host) {
       return 'label-' + String(host).replace(/\./g, '-');
@@ -2607,10 +2683,11 @@ function getAdminDashboardHtml(): string {
           el.innerHTML = 'No printers yet. Run a scan below and click <strong>Add…</strong> on a host, or set <code>PRINTERS</code> in env, e.g. <code>PRINTERS=carcass:192.168.1.50:9100:role=carcass</code>.';
           return;
         }
-        el.innerHTML = '<table class="disc-table"><thead><tr><th>ID</th><th>Host:port</th><th>Role</th><th>Status</th><th>TSC web UI</th></tr></thead><tbody>' +
+        el.innerHTML = '<table class="disc-table"><thead><tr><th>ID</th><th>Host:port</th><th>Role</th><th>Status</th><th>TSC web UI</th><th>Diagnose</th></tr></thead><tbody>' +
           j.data.map(function(p) {
             var web = 'http://' + p.host + '/';
-            return '<tr><td>' + escapeHtml(p.printer_id) + '</td><td><code>' + escapeHtml(p.host) + ':' + p.port + '</code></td><td>' + escapeHtml(p.role) + '</td><td>' + escapeHtml(p.status) + '</td><td><a class="ext-link" href="' + web + '" target="_blank" rel="noopener noreferrer">Open UI</a></td></tr>';
+            var diag = '<button type="button" class="btn btn-primary printer-diag-btn" style="padding:0.2rem 0.45rem;font-size:0.68rem;white-space:nowrap" data-printer-id="' + escapeHtml(p.printer_id) + '">Run</button>';
+            return '<tr><td>' + escapeHtml(p.printer_id) + '</td><td><code>' + escapeHtml(p.host) + ':' + p.port + '</code></td><td>' + escapeHtml(p.role) + '</td><td>' + escapeHtml(p.status) + '</td><td><a class="ext-link" href="' + web + '" target="_blank" rel="noopener noreferrer">Open UI</a></td><td>' + diag + '</td></tr>';
           }).join('') + '</tbody></table>';
       } catch (e) {
         el.textContent = 'Failed to load printers';

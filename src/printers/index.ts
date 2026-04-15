@@ -25,6 +25,12 @@ export {
   updateGlobalPrinterId,
 } from "./printer-manager.ts";
 export type { PrinterRecord, PrinterRole } from "./printer-manager.ts";
-export { TcpPrinterClient, PrinterStatus, describeStatus } from "./tcp-printer-client.ts";
+export {
+  TcpPrinterClient,
+  PrinterStatus,
+  describeStatus,
+  parseEscSResponse,
+} from "./tcp-printer-client.ts";
+export type { PrinterDiagnosticsReport, PrinterDiagnosticsExtended } from "./tcp-printer-client.ts";
 export { discoverPrinterCandidates, suggestSubnetFromIp, ipv4ToList } from "./discovery.ts";
 export type { DiscoverOptions, PrinterCandidate } from "./discovery.ts";

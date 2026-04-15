@@ -65,7 +65,12 @@ export class CloudSyncService {
   private syncConfig: SyncConfig;
   private retryTimer: ReturnType<typeof setInterval> | null = null;
   private batchTimer: ReturnType<typeof setInterval> | null = null;
-  private printJobPollTimer: ReturnType<typeof setInterval> | null = null;
+  /** Recursive schedule (adaptive delay after 304) */
+  private printJobPollTimeoutId: ReturnType<typeof setTimeout> | null = null;
+  /** ETag from last GET /print-jobs/pending 200 response */
+  private printJobsETag: string | null = null;
+  /** Consecutive 304 responses — used to back off poll interval and reduce request count */
+  private printJobs304Streak: number = 0;
 
   constructor() {
     this.syncConfig = {
@@ -199,6 +204,11 @@ export class CloudSyncService {
     this.syncPendingEvents().catch(error => {
       console.error("[SyncService] Error in backlog sync:", error);
     });
+
+    this.printJobs304Streak = 0;
+    this.pollAndEnqueuePrintJobs().catch((e) => {
+      console.warn("[SyncService] Print job poll after reconnect:", e);
+    });
   }
 
   /**
@@ -206,6 +216,8 @@ export class CloudSyncService {
    */
   private handleCloudDisconnected(): void {
     console.log("[SyncService] Cloud disconnected");
+    this.printJobsETag = null;
+    this.printJobs304Streak = 0;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -616,6 +628,7 @@ export class CloudSyncService {
 
   /**
    * Poll Django for pending print jobs and enqueue any new ones locally.
+   * Uses If-None-Match + stored ETag so the cloud can return 304 when the queue is unchanged.
    * De-duplicates by global_job_id so repeated polls are idempotent.
    */
   async pollAndEnqueuePrintJobs(): Promise<void> {
@@ -623,9 +636,19 @@ export class CloudSyncService {
     if (!restClient?.isOnline()) return;
 
     try {
-      const jobs = await restClient.pollPendingPrintJobs();
+      const result = await restClient.pollPendingPrintJobs(this.printJobsETag);
+      if (result.notModified) {
+        this.printJobs304Streak++;
+        return;
+      }
+
+      this.printJobs304Streak = 0;
+      if (result.etag) {
+        this.printJobsETag = result.etag;
+      }
+
       let enqueued = 0;
-      for (const job of jobs) {
+      for (const job of result.jobs) {
         const existing = getJobByGlobalId(job.jobId);
         if (existing) continue;
 
@@ -649,6 +672,17 @@ export class CloudSyncService {
         e instanceof Error ? e.message : String(e)
       );
     }
+  }
+
+  /** Next delay: base interval after 200; exponential backoff (capped) after consecutive 304s */
+  private getPrintJobPollDelayMs(): number {
+    const base = config.printers.printJobPollIntervalMs;
+    const max = config.printers.printJobPollMaxIntervalMs;
+    if (this.printJobs304Streak <= 0 || max <= base) {
+      return base;
+    }
+    const exp = Math.min(this.printJobs304Streak, 10);
+    return Math.min(base * Math.pow(2, exp), max);
   }
 
   /**
@@ -691,22 +725,37 @@ export class CloudSyncService {
   }
 
   private startPrintJobPollTimer(): void {
-    if (this.printJobPollTimer) {
-      clearInterval(this.printJobPollTimer);
-    }
-    this.printJobPollTimer = setInterval(() => {
-      if (this.isRunning) {
-        this.pollAndEnqueuePrintJobs().catch((e) => {
-          console.error("[SyncService] Print job poll error:", e);
-        });
-      }
-    }, config.printers.printJobPollIntervalMs);
+    this.stopPrintJobPollTimer();
+
+    const scheduleNext = (): void => {
+      if (!this.isRunning) return;
+      const delay = this.getPrintJobPollDelayMs();
+      this.printJobPollTimeoutId = setTimeout(() => {
+        this.printJobPollTimeoutId = null;
+        if (!this.isRunning) return;
+        this.pollAndEnqueuePrintJobs()
+          .catch((e) => {
+            console.error("[SyncService] Print job poll error:", e);
+          })
+          .finally(() => {
+            if (this.isRunning) scheduleNext();
+          });
+      }, delay);
+    };
+
+    this.pollAndEnqueuePrintJobs()
+      .catch((e) => {
+        console.error("[SyncService] Print job poll error:", e);
+      })
+      .finally(() => {
+        if (this.isRunning) scheduleNext();
+      });
   }
 
   private stopPrintJobPollTimer(): void {
-    if (this.printJobPollTimer) {
-      clearInterval(this.printJobPollTimer);
-      this.printJobPollTimer = null;
+    if (this.printJobPollTimeoutId !== null) {
+      clearTimeout(this.printJobPollTimeoutId);
+      this.printJobPollTimeoutId = null;
     }
   }
 }
