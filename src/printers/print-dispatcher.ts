@@ -32,12 +32,13 @@ export async function ackJobDispatchedToCloud(
 ): Promise<void> {
   const restClient = getRestClient();
   if (!restClient) return;
+  const row = getJob(jobId);
   try {
     await restClient.ackPrintJob(globalJobId, {
       status: "dispatched",
       printedAt: null,
       resolvedPrinter: resolveGlobalPrinterId(printerId),
-      attempts: 0,
+      attempts: row?.attempts ?? 1,
     });
     console.log(`[PrintDispatcher] → ACKed DISPATCHED job ${globalJobId} to cloud (localJob=${jobId}, printer=${printerId})`);
   } catch (e) {
@@ -72,7 +73,7 @@ export async function ackJobToCloud(
   }
 }
 
-async function ackJobFailedToCloud(
+export async function ackJobFailedToCloud(
   globalJobId: string,
   jobId: string,
   printerId: string | null,
@@ -108,6 +109,15 @@ async function dispatchOne(job: PrintJobRow): Promise<void> {
   const resolved = mgr.resolvePrinter(job);
   if (!resolved) {
     scheduleRetryBumpAttempts(job.job_id, "no eligible printer for target");
+    const updated = getJob(job.job_id);
+    if (updated?.status === "failed" && job.global_job_id) {
+      void ackJobFailedToCloud(
+        job.global_job_id,
+        job.job_id,
+        null,
+        "no eligible printer for target"
+      );
+    }
     return;
   }
 

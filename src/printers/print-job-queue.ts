@@ -223,3 +223,18 @@ export function getJobByGlobalId(globalJobId: string): PrintJobRow | null {
     .get(globalJobId) as Record<string, unknown> | undefined;
   return row ? rowToJob(row) : null;
 }
+
+/** Reset jobs stuck in dispatching (e.g. process crash mid-send). */
+export function recoverStuckDispatchingJobs(maxAgeMs: number): number {
+  const db = getDatabase();
+  const cutoff = new Date(Date.now() - maxAgeMs).toISOString();
+  const result = db
+    .prepare(
+      `UPDATE print_jobs
+       SET status = 'pending', resolved_printer = NULL, error_text = 'recovered from stuck dispatching'
+       WHERE status = 'dispatching'
+         AND created_at < ?`
+    )
+    .run(cutoff);
+  return result.changes;
+}

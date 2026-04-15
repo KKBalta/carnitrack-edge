@@ -16,7 +16,14 @@ export function resolvePrinter(job: PrintJobRow) {
   return getPrinterManager().resolvePrinter(job);
 }
 
-export { enqueue, getJobs, getJob, getJobPublic, getJobByGlobalId } from "./print-job-queue.ts";
+export {
+  enqueue,
+  getJobs,
+  getJob,
+  getJobPublic,
+  getJobByGlobalId,
+  recoverStuckDispatchingJobs,
+} from "./print-job-queue.ts";
 export {
   getPrinterManager,
   getPrinterById,
@@ -25,6 +32,7 @@ export {
   updateGlobalPrinterId,
 } from "./printer-manager.ts";
 export type { PrinterRecord, PrinterRole } from "./printer-manager.ts";
+export { normalizeRole } from "./printer-manager.ts";
 export {
   TcpPrinterClient,
   PrinterStatus,

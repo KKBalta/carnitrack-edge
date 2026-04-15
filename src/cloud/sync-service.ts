@@ -14,7 +14,7 @@ import { getOfflineBatchManager } from "./offline-batch-manager.ts";
 import { config } from "../config.ts";
 import type { WeighingEvent, EventPayload } from "../types/index.ts";
 import { enqueue, getJobByGlobalId } from "../printers/print-job-queue.ts";
-import { getPrinterManager, updateGlobalPrinterId } from "../printers/printer-manager.ts";
+import { getPrinterManager, normalizeRole, updateGlobalPrinterId } from "../printers/printer-manager.ts";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -655,7 +655,7 @@ export class CloudSyncService {
         const prnBytes = Buffer.from(iconv.encode(job.prnContent, "windows-1254"));
         enqueue({
           globalJobId: job.jobId,
-          targetRole: job.targetRole,
+          targetRole: normalizeRole(job.targetRole),
           targetPrinter: job.targetPrinter,
           prnBytes,
           source: "cloud",

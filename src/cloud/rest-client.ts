@@ -197,6 +197,68 @@ export class RestResponseError extends Error {
   }
 }
 
+/** Normalized identity payload from POST /register or POST /activate */
+export interface EdgeBootstrapPayload {
+  edgeId: string;
+  siteId: string;
+  siteName: string;
+  config: Record<string, unknown>;
+}
+
+/**
+ * Django / many APIs return snake_case; accept camelCase or snake_case and validate UUID edge id.
+ */
+export function parseEdgeBootstrapResponse(
+  raw: unknown,
+  context: string,
+  httpStatus: number = 502
+): EdgeBootstrapPayload {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new RestResponseError(
+      `${context}: expected a JSON object in response body`,
+      httpStatus,
+      typeof raw === "string" ? raw : JSON.stringify(raw)
+    );
+  }
+  const o = raw as Record<string, unknown>;
+  const edgeIdRaw = o.edgeId ?? o.edge_id;
+  const siteIdRaw = o.siteId ?? o.site_id;
+  const siteNameRaw = o.siteName ?? o.site_name;
+  const configRaw = o.config;
+
+  const edgeId = typeof edgeIdRaw === "string" ? edgeIdRaw.trim() : "";
+  const siteId = typeof siteIdRaw === "string" ? siteIdRaw.trim() : "";
+  const siteName = typeof siteNameRaw === "string" ? siteNameRaw.trim() : "";
+  const cfg =
+    configRaw !== null &&
+    typeof configRaw === "object" &&
+    !Array.isArray(configRaw)
+      ? (configRaw as Record<string, unknown>)
+      : {};
+
+  if (!edgeId || !siteId) {
+    throw new RestResponseError(
+      `${context}: response missing edge id or site id`,
+      httpStatus,
+      JSON.stringify(raw)
+    );
+  }
+  if (!isValidUuid(edgeId)) {
+    throw new RestResponseError(
+      `${context}: edge id must be a valid UUID`,
+      httpStatus,
+      JSON.stringify(raw)
+    );
+  }
+
+  return {
+    edgeId,
+    siteId,
+    siteName: siteName || siteId,
+    config: cfg,
+  };
+}
+
 /** Edge API path suffixes (no duplicated /edge/; backend prefix is /api/v1/edge/) */
 const EDGE_PATHS = [
   "/register",
@@ -674,12 +736,8 @@ export class RestClient {
         bodyText
       );
     }
-    return await response.json() as {
-      edgeId: string;
-      siteId: string;
-      siteName: string;
-      config: Record<string, unknown>;
-    };
+    const raw = await response.json();
+    return parseEdgeBootstrapResponse(raw, "Registration", response.status);
   }
 
   /**
@@ -713,12 +771,8 @@ export class RestClient {
         bodyText
       );
     }
-    return await response.json() as {
-      edgeId: string;
-      siteId: string;
-      siteName: string;
-      config: Record<string, unknown>;
-    };
+    const raw = await response.json();
+    return parseEdgeBootstrapResponse(raw, "Activate", response.status);
   }
 
   /**

@@ -42,6 +42,13 @@ const ROLES = new Set<string>([
   "generic",
 ]);
 
+/** Map cloud/operator role strings to a known printer role (default generic). */
+export function normalizeRole(role: string | null | undefined): PrinterRole {
+  if (role == null || !String(role).trim()) return "generic";
+  const r = String(role).trim().toLowerCase();
+  return (ROLES.has(r) ? r : "generic") as PrinterRole;
+}
+
 let printerManagerInstance: PrinterManager | null = null;
 let healthInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -202,8 +209,7 @@ export class PrinterManager {
     if (!host.length) throw new Error("host required");
     const port = opts.port;
     if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("port must be 1–65535");
-    let role = opts.role.trim().toLowerCase();
-    if (!ROLES.has(role)) role = "generic";
+    const role = normalizeRole(opts.role);
 
     const db = getDatabase();
     const existing = this.getPrinterById(printerId);
@@ -316,8 +322,7 @@ export function parsePrintersConfigString(configString: string): PrinterRecord[]
     for (const kv of rest) {
       const m = kv.match(/^role=(.+)$/i);
       if (m) {
-        const r = m[1].toLowerCase();
-        role = ROLES.has(r) ? r : "generic";
+        role = normalizeRole(m[1]);
       }
     }
     out.push({

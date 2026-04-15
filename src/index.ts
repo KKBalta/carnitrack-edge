@@ -51,6 +51,7 @@ import {
   initDatabase,
   closeDatabase,
   getAllEdgeConfig,
+  getEdgeConfig,
   setEdgeConfig,
   deleteEdgeConfig,
 } from "./storage/database.ts";
@@ -83,6 +84,7 @@ import {
   initPrinters,
   destroyPrinters,
   enqueue,
+  recoverStuckDispatchingJobs,
   getJobs,
   getJobPublic,
   getPrinterManager,
@@ -1019,6 +1021,11 @@ function getSetupWizardHtml(): string {
           const r = await fetch('/health', { cache: 'no-store' });
           if (!r.ok) throw new Error('bad status');
           const h = await r.json();
+          /* Normal mode uses status "ok"; setup wizard uses "setup". Prefer status so we redirect even if a client omits setupMode. */
+          if (h.status === 'ok') {
+            window.location.replace('/');
+            return;
+          }
           if (h.setupMode === true) throw new Error('still setup');
           window.location.replace('/');
           return;
@@ -1104,7 +1111,12 @@ async function main() {
   console.log("[INIT] Initializing database...");
   initDatabase();
   console.log(`[INIT] ✓ Database ready at: ${config.database.path}`);
-  
+
+  const recoveredDispatching = recoverStuckDispatchingJobs(5 * 60 * 1000);
+  if (recoveredDispatching > 0) {
+    console.log(`[INIT] Recovered ${recoveredDispatching} stuck dispatching print job(s)`);
+  }
+
   // ─────────────────────────────────────────────────────────────────────────────
   // Load Edge Identity (from database)
   // ─────────────────────────────────────────────────────────────────────────────
@@ -1218,6 +1230,8 @@ async function main() {
   // ─────────────────────────────────────────────────────────────────────────────
   console.log("[INIT] Initializing Cloud REST client...");
 
+  const restApiBase = getEdgeConfig("cloud_api_url")?.trim() || config.rest.apiUrl;
+
   let restClient: ReturnType<typeof initRestClient>;
   const ensureEdgeIdentity = async (
     reason: "missing_or_invalid" | "auth_recovery"
@@ -1241,7 +1255,7 @@ async function main() {
   };
 
   restClient = initRestClient({
-    apiUrl: config.rest.apiUrl,
+    apiUrl: restApiBase,
     edgeIdentity: getCurrentEdgeIdentity(),
     ensureEdgeIdentity,
     autoStart: false,
@@ -1346,7 +1360,7 @@ async function main() {
   startAggregatedHeartbeatLoop();
   
   // Start connection check
-  console.log(`[CLOUD] REST API URL: ${config.rest.apiUrl}`);
+  console.log(`[CLOUD] REST API URL: ${restApiBase}`);
   restClient.start();
   
   // Start in offline mode until connected
