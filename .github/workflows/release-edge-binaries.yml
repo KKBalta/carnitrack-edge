@@ -56,25 +56,21 @@ jobs:
           chmod +x release-assets/carnitrack-edge-linux-x64
           ls -la release-assets/
 
+      # GitHub CLI: delete + recreate so tag `edge-latest` always points at this commit and assets refresh.
+      # (Third-party release actions sometimes attach assets without obvious logs; `gh` output is explicit.)
       - name: Publish rolling release (edge-latest)
-        uses: ncipollo/release-action@v1
-        with:
-          tag: edge-latest
-          name: CarniTrack Edge — latest (main)
-          body: |
-            Automated build from `${{ github.sha }}` on branch `${{ github.ref_name }}`.
-
-            **Assets (stable filenames):**
-            - `carnitrack-edge-windows-x64.exe`
-            - `carnitrack-edge-linux-x64`
-
-            Set in production/staging:
-            - `EDGE_CLIENT_DOWNLOAD_URL_WINDOWS` → Windows asset URL above
-            - `EDGE_CLIENT_DOWNLOAD_URL_LINUX` → Linux asset URL above
-          allowUpdates: true
-          omitBodyDuringUpdate: false
-          omitNameDuringUpdate: true
-          replacesArtifacts: true
-          artifactErrorsFailBuild: true
-          artifacts: "release-assets/*"
-          token: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eux
+          gh release delete edge-latest --yes --cleanup-tag 2>/dev/null || true
+          NOTES="Automated build from ${{ github.sha }} on ${{ github.ref_name }}. Assets: carnitrack-edge-windows-x64.exe, carnitrack-edge-linux-x64. Set EDGE_CLIENT_DOWNLOAD_URL_* to this release URLs."
+          gh release create edge-latest \
+            release-assets/carnitrack-edge-windows-x64.exe \
+            release-assets/carnitrack-edge-linux-x64 \
+            --title "CarniTrack Edge — latest (main)" \
+            --notes "${NOTES}" \
+            --target "${{ github.sha }}" \
+            --latest
+          echo "OK: release edge-latest published."
+          gh release view edge-latest --json url,tagName,assets --jq .
