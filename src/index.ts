@@ -1011,6 +1011,31 @@ function getSetupWizardHtml(): string {
       this.value = v;
     });
 
+    async function waitForNormalModeThenRedirect() {
+      const msgEl = document.getElementById('message');
+      let noteAdded = false;
+      for (let i = 0; i < 120; i++) {
+        try {
+          const r = await fetch('/health', { cache: 'no-store' });
+          if (!r.ok) throw new Error('bad status');
+          const h = await r.json();
+          if (h.setupMode === true) throw new Error('still setup');
+          window.location.replace('/');
+          return;
+        } catch (_) {
+          /* HTTP server is down or still on setup handler while process restarts */
+        }
+        if (!noteAdded && i >= 6) {
+          noteAdded = true;
+          if (msgEl) {
+            msgEl.innerHTML += '<br><br><small style="opacity:.85">Waiting for Edge to finish restarting (checking every 0.5s)…</small>';
+          }
+        }
+        await new Promise(function (resolve) { setTimeout(resolve, 500); });
+      }
+      window.location.replace('/');
+    }
+
     async function handleActivate(e) {
       e.preventDefault();
       const code = document.getElementById('code').value.trim();
@@ -1038,10 +1063,10 @@ function getSetupWizardHtml(): string {
           msg.className = 'message success';
           msg.innerHTML = 'Activation successful! <strong>' + (data.siteName || '') +
             '</strong><br>Edge ID: ' + (data.edgeId || '').substring(0, 8) + '...' +
-            '<br><br>Starting CarniTrack Edge... Page will reload automatically.';
+            '<br><br>Starting CarniTrack Edge… This page will open the dashboard as soon as the service is ready.';
           msg.style.display = 'block';
 
-          setTimeout(() => { window.location.reload(); }, 4000);
+          waitForNormalModeThenRedirect();
         } else {
           throw new Error(data.error || 'Activation failed');
         }
@@ -1649,9 +1674,12 @@ async function handleApi(req: Request, path: string): Promise<Response> {
   if (path === "/api/status" && req.method === "GET") {
     const restClient = getRestClient();
     const restState = restClient?.getState();
-    // Use rest.isOnline as fallback: if we're actually reaching the cloud, show "connected"
+    const restStatus = restClient?.getStatus() ?? "disconnected";
+    // Prefer live REST client: recent successful requests or explicit connected status
     const effectiveCloudConnection =
-      restClient?.isOnline() ? "connected" : state.cloudConnection;
+      restClient?.isOnline() || restStatus === "connected"
+        ? "connected"
+        : state.cloudConnection;
 
     return Response.json({
       success: true,
@@ -2472,7 +2500,7 @@ function getAdminDashboardHtml(): string {
     </div>
   </main>
   
-  <footer>Carnitrack_EDGE v0.3.0 • Web UI • Scales &amp; devices refresh: 3s</footer>
+  <footer>Carnitrack_EDGE v0.3.0 • Web UI • Auto-refresh: 1s (also on tab focus)</footer>
   
   <!-- Edit Device Modal -->
   <div class="modal-overlay" id="edit-modal">
@@ -2757,11 +2785,19 @@ function getAdminDashboardHtml(): string {
         
         if (statusData.cloudConnection === 'connected') {
           dot.className = 'status-dot online';
+          dot.style.opacity = '';
           status.textContent = 'Cloud: Connected';
           badge.className = 'badge badge-online';
           badge.textContent = 'ONLINE';
+        } else if (statusData.cloudConnection === 'connecting' || statusData.cloudConnection === 'reconnecting') {
+          dot.className = 'status-dot offline';
+          dot.style.opacity = '0.85';
+          status.textContent = 'Cloud: ' + statusData.cloudConnection + '…';
+          badge.className = 'badge badge-offline';
+          badge.textContent = 'CONNECTING';
         } else {
           dot.className = 'status-dot offline';
+          dot.style.opacity = '';
           status.textContent = 'Cloud: ' + statusData.cloudConnection;
           badge.className = 'badge badge-offline';
           badge.textContent = 'OFFLINE';
@@ -2874,7 +2910,11 @@ function getAdminDashboardHtml(): string {
     }
     
     update();
-    setInterval(update, 3000);
+    setInterval(update, 1000);
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState === 'visible') update();
+    });
+    window.addEventListener('focus', function () { update(); });
   </script>
 </body>
 </html>`;
