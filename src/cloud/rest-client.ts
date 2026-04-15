@@ -125,6 +125,7 @@ export interface HeartbeatPrinterEntry {
   localPrinterId: string;
   status: string;
   lastSeenAt: string | null;
+  lastError?: string | null;
 }
 
 /** Payload for POST /heartbeat (aggregated connectivity + device status) */
@@ -144,6 +145,7 @@ export interface PendingPrintJobEntry {
   prnContent: string;
   labelCount: number;
   createdAt: string;
+  attempts?: number;
 }
 
 /** GET /print-jobs/pending with ETag / 304 support (same pattern as getSessions) */
@@ -155,7 +157,7 @@ export interface PrintJobsPollResult {
 
 /** Body for POST /print-jobs/<uuid>/ack */
 export interface PrintJobAckPayload {
-  status: "completed" | "failed";
+  status: "dispatched" | "completed" | "failed";
   printedAt: string | null;
   resolvedPrinter: string | null;
   attempts: number;
@@ -283,10 +285,10 @@ export class RestClient {
    * Check if currently online (based on recent request success)
    */
   isOnline(): boolean {
-    // Consider online if we had a successful request in the last 30 seconds
+    // Consider online if we had a successful request in the last 35 seconds
     if (this.lastSuccessfulRequest) {
       const timeSinceSuccess = Date.now() - this.lastSuccessfulRequest.getTime();
-      return timeSinceSuccess < 30_000;
+      return timeSinceSuccess < 35_000;
     }
     return this.isOnlineFlag;
   }

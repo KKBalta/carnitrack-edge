@@ -1504,6 +1504,7 @@ function buildHeartbeatPayload(): HeartbeatPayload {
       localPrinterId: p.printer_id,
       status: p.status,
       lastSeenAt: p.last_seen_at ?? null,
+      lastError: p.last_error ?? null,
     })),
   };
 }

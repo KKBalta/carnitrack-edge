@@ -25,6 +25,29 @@ function resolveGlobalPrinterId(localPrinterId: string | null): string | null {
   return getPrinterById(localPrinterId)?.global_printer_id ?? null;
 }
 
+export async function ackJobDispatchedToCloud(
+  globalJobId: string,
+  jobId: string,
+  printerId: string
+): Promise<void> {
+  const restClient = getRestClient();
+  if (!restClient) return;
+  try {
+    await restClient.ackPrintJob(globalJobId, {
+      status: "dispatched",
+      printedAt: null,
+      resolvedPrinter: resolveGlobalPrinterId(printerId),
+      attempts: 0,
+    });
+    console.log(`[PrintDispatcher] → ACKed DISPATCHED job ${globalJobId} to cloud (localJob=${jobId}, printer=${printerId})`);
+  } catch (e) {
+    console.warn(
+      `[PrintDispatcher] Cloud dispatched-ACK failed for job ${globalJobId}:`,
+      e instanceof Error ? e.message : String(e)
+    );
+  }
+}
+
 export async function ackJobToCloud(
   globalJobId: string,
   jobId: string,
@@ -92,6 +115,9 @@ async function dispatchOne(job: PrintJobRow): Promise<void> {
 
   inFlight.add(resolved.printer_id);
   markDispatching(job.job_id, resolved.printer_id);
+  if (job.global_job_id) {
+    void ackJobDispatchedToCloud(job.global_job_id, job.job_id, resolved.printer_id);
+  }
 
   try {
     const client = new TcpPrinterClient(

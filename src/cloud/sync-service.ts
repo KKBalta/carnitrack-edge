@@ -660,6 +660,7 @@ export class CloudSyncService {
           prnBytes,
           source: "cloud",
           labelCount: job.labelCount ?? 1,
+          cloudAttempts: job.attempts,
         });
         enqueued++;
       }

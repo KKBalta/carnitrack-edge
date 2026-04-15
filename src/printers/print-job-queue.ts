@@ -33,6 +33,8 @@ export interface EnqueueParams {
   source: PrintJobSource;
   globalJobId?: string | null;
   labelCount?: number;
+  /** Attempt count from cloud when source is cloud (Django GET /print-jobs/pending). */
+  cloudAttempts?: number;
 }
 
 function backoffMs(attemptsForBackoff: number): number {
@@ -54,12 +56,13 @@ export function enqueue(params: EnqueueParams): string {
   const created = nowISO();
   const labelCount = params.labelCount ?? 1;
 
+  const initialAttempts = params.cloudAttempts ?? 0;
   db.prepare(
     `INSERT INTO print_jobs (
       job_id, global_job_id, target_printer, target_role, resolved_printer,
       prn_bytes, status, source, label_count, attempts, max_attempts,
       next_attempt_at, error_text, created_at, printed_at
-    ) VALUES (?, ?, ?, ?, NULL, ?, 'pending', ?, ?, 0, 8, NULL, NULL, ?, NULL)`
+    ) VALUES (?, ?, ?, ?, NULL, ?, 'pending', ?, ?, ?, 8, NULL, NULL, ?, NULL)`
   ).run(
     jobId,
     params.globalJobId ?? null,
@@ -68,6 +71,7 @@ export function enqueue(params: EnqueueParams): string {
     params.prnBytes,
     params.source,
     labelCount,
+    initialAttempts,
     created
   );
 
