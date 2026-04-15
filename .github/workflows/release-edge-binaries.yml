@@ -23,12 +23,16 @@ concurrency:
   group: release-edge-binaries-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Use Node 24 for JavaScript-based actions until it is the default (see GitHub deprecation of Node 20).
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build-and-release:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
